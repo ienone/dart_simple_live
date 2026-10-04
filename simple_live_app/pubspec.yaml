@@ -92,6 +92,10 @@ dependencies:
   signalr_netcore: ^1.4.4 # SignalR
 
   # 视频播放
+  audio_service: ^0.18.19
+  audio_session: ^0.2.4
+  audio_service_win: ^0.0.3
+  dbus: ^0.7.15
   volume_controller: any
   media_kit:
     git:

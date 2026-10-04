@@ -26,6 +26,7 @@ import 'package:simple_live_app/services/db_service.dart';
 import 'package:simple_live_app/services/follow_block_service.dart';
 import 'package:simple_live_app/services/follow_service.dart';
 import 'package:simple_live_app/services/history_service.dart';
+import 'package:simple_live_app/services/media_session_service.dart';
 import 'package:simple_live_app/src/rust/api/danmaku_mask.dart';
 import 'package:simple_live_app/widgets/desktop_refresh_button.dart';
 import 'package:simple_live_app/widgets/follow_user_item.dart';
@@ -57,11 +58,52 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   final nativeAudioOnly = false.obs;
   final danmakuReconnecting = false.obs;
   final danmakuConnected = false.obs;
+  StreamSubscription<bool>? _sessionPlayingSubscription;
+  StreamSubscription<bool>? _sessionBufferingSubscription;
+  Worker? _sessionStateWorker;
+
+  void _bindMediaSession() {
+    final room = detail.value;
+    if (room == null || !Get.isRegistered<MediaSessionService>()) return;
+    MediaSessionService.instance.bind(
+      owner: this,
+      id: '${site.id}_$roomId',
+      title: room.title,
+      artist: room.userName,
+      artUri: room.cover.isEmpty ? room.userAvatar : room.cover,
+      play: resumeLive,
+      pause: pauseLive,
+      openRoom: (follow) => resetRoom(Sites.allSites[follow.siteId]!, follow.roomId),
+    );
+    _updateMediaSession();
+  }
+
+  void _updateMediaSession() {
+    if (_closing || !Get.isRegistered<MediaSessionService>()) return;
+    MediaSessionService.instance.update(
+      this,
+      playing: !playbackPaused.value && (player.state.playing || playbackLoading.value),
+      buffering: playbackLoading.value || player.state.buffering,
+    );
+  }
+
+  void _liveEnded() {
+    if (!_closing && Get.isRegistered<MediaSessionService>()) {
+      unawaited(MediaSessionService.instance.onPlaybackEnded(this, offline: true));
+    }
+  }
+
   void _clearDanmakuPlayback() {
     ++_danmakuBufferGeneration;
     danmakuBuffer.clear();
     danmakuController?.clear();
   }
+
+  bool _queueSkipsRecording(LiveRoomDetail room) =>
+      !room.status &&
+      room.isRecord &&
+      Get.isRegistered<MediaSessionService>() &&
+      MediaSessionService.instance.isQueueTransition(this);
 
   bool _currentPlayback(int generation) => !_closing && !playbackPaused.value && generation == _playbackGeneration;
 
@@ -156,6 +198,9 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     if (FollowService.instance.followList.isEmpty) {
       FollowService.instance.loadData();
     }
+    _sessionPlayingSubscription = player.stream.playing.listen((_) => _updateMediaSession());
+    _sessionBufferingSubscription = player.stream.buffering.listen((_) => _updateMediaSession());
+    _sessionStateWorker = everAll([playbackPaused, playbackLoading], (_) => _updateMediaSession());
     initAutoExit();
     showDanmakuState.value = AppSettingsController.instance.danmuEnable.value;
     followed.value = FollowService.instance.getFollowExist("${site.id}_$roomId");
@@ -545,6 +590,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       online.value = room.online;
       liveStatus.value = room.status || room.isRecord;
       followUserBlock.value = FollowBlockService.instance.getBlock(siteId: site.id, roomId: roomId);
+      _bindMediaSession();
+      if (_queueSkipsRecording(room)) liveStatus.value = false;
       if (liveStatus.value) {
         unawaited(getSuperChatMessage());
         unawaited(_connectDanmaku(room).catchError((Object e) {
@@ -554,7 +601,10 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
           await _resolvePlayback(generation, resetQuality: true);
         }
       } else if (_currentPlayback(generation)) {
+        // A late offline response must not advance the queue after the user
+        // paused (or a newer playback request took ownership of this room).
         playbackPaused.value = true;
+        _liveEnded();
       }
     } catch (e) {
       if (_closing || roomGeneration != _roomGeneration) return;
@@ -568,6 +618,9 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
   Future<void> pauseLive() async {
     if (_closing) return;
+    if (Get.isRegistered<MediaSessionService>()) {
+      MediaSessionService.instance.cancelPendingAdvance(this);
+    }
     final generation = ++_playbackGeneration;
     playbackPaused.value = true;
     playbackLoading.value = false;
@@ -666,9 +719,12 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
         detail.value = room;
         online.value = room.online;
         liveStatus.value = room.status || room.isRecord;
+        _bindMediaSession();
       }
+      if (_queueSkipsRecording(room)) liveStatus.value = false;
       if (!liveStatus.value) {
         playbackPaused.value = true;
+        _liveEnded();
         return;
       }
       // Refresh quality data too: some adapters store signed/expiring URLs there.
@@ -1423,6 +1479,10 @@ ${error?.stackTrace}''');
     ++_playbackGeneration;
     ++_danmakuGeneration;
     subscription?.cancel();
+    _sessionPlayingSubscription?.cancel();
+    _sessionBufferingSubscription?.cancel();
+    _sessionStateWorker?.dispose();
+    if (Get.isRegistered<MediaSessionService>()) MediaSessionService.instance.unbind(this);
     liveDanmaku.onMessage = null;
     liveDanmaku.onClose = null;
     liveDanmaku.onReady = null;

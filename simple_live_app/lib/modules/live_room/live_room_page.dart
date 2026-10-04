@@ -14,6 +14,8 @@ import 'package:simple_live_app/app/utils.dart';
 import 'package:simple_live_app/modules/live_room/live_room_controller.dart';
 import 'package:simple_live_app/modules/live_room/player/player_controls.dart';
 import 'package:simple_live_app/services/follow_service.dart';
+import 'package:simple_live_app/services/media_session_service.dart';
+import 'package:simple_live_app/modules/media_queue/media_queue_page.dart';
 import 'package:simple_live_app/widgets/context_menu.dart';
 import 'package:simple_live_app/widgets/desktop_refresh_button.dart';
 import 'package:simple_live_app/widgets/follow_user_item.dart';
@@ -775,6 +777,34 @@ class LiveRoomPage extends GetView<LiveRoomController> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (Get.isRegistered<MediaSessionService>()) ...[
+              Obx(() => ListTile(
+                    leading: const Icon(Icons.skip_previous),
+                    title: const Text('上一直播间'),
+                    enabled: MediaSessionService.instance.liveQueue.length > 1,
+                    onTap: () {
+                      Get.back();
+                      MediaSessionService.instance.previous();
+                    },
+                  )),
+              Obx(() => ListTile(
+                    leading: const Icon(Icons.skip_next),
+                    title: const Text('下一直播间'),
+                    enabled: MediaSessionService.instance.liveQueue.length > 1,
+                    onTap: () {
+                      Get.back();
+                      MediaSessionService.instance.next();
+                    },
+                  )),
+              ListTile(
+                leading: const Icon(Icons.queue_music),
+                title: const Text('播放队列'),
+                onTap: () {
+                  Get.back();
+                  Get.to(() => const MediaQueuePage());
+                },
+              ),
+            ],
             ListTile(
               leading: const Icon(Icons.play_circle_outline),
               trailing: const Icon(Icons.chevron_right),

@@ -34,6 +34,7 @@ import 'package:simple_live_app/services/follow_block_service.dart';
 import 'package:simple_live_app/services/follow_service.dart';
 import 'package:simple_live_app/services/history_service.dart';
 import 'package:simple_live_app/services/local_storage_service.dart';
+import 'package:simple_live_app/services/media_session_service.dart';
 import 'package:simple_live_app/services/migration_service.dart';
 import 'package:simple_live_app/services/platform_service.dart';
 import 'package:simple_live_app/services/sync_service.dart';
@@ -121,6 +122,11 @@ Future initServices() async {
   Get.put(SyncService());
 
   Get.put(FollowService());
+
+  await Get.putAsync<MediaSessionService>(
+    () => MediaSessionService().init(),
+    permanent: true,
+  );
 
   Get.put(HistoryService());
 

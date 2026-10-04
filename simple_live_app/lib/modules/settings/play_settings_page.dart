@@ -4,6 +4,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:get/get.dart';
 import 'package:simple_live_app/app/app_style.dart';
 import 'package:simple_live_app/app/controller/app_settings_controller.dart';
+import 'package:simple_live_app/modules/media_queue/media_queue_page.dart';
 import 'package:simple_live_app/widgets/settings/settings_card.dart';
 import 'package:simple_live_app/widgets/settings/settings_menu.dart';
 import 'package:simple_live_app/widgets/settings/settings_number.dart';
@@ -32,6 +33,13 @@ class PlaySettingsPage extends GetView<AppSettingsController> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                ListTile(
+                  key: const ValueKey('media-queue-settings'),
+                  title: const Text('播放队列'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Get.to(() => const MediaQueuePage()),
+                ),
+                AppStyle.divider,
                 Obx(
                   () => SettingsSwitch(
                     title: "硬件解码",
