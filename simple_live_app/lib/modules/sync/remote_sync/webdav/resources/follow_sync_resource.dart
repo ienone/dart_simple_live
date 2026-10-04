@@ -182,6 +182,8 @@ class FollowSyncResource implements SyncResource<FollowBundle> {
           // 两边都是正常记录，合并观看时长
           if (remoteItem.metadataUpdatedAt > localItem.metadataUpdatedAt) {
             localItem.replaceTags(remoteItem.tags);
+            localItem.pinned = remoteItem.pinned;
+            localItem.manualOrder = remoteItem.manualOrder;
             localItem.metadataUpdatedAt = remoteItem.metadataUpdatedAt;
           }
           localItem.watchDurationSec = remoteItem.watchDurationSec + localItem.syncDuration;

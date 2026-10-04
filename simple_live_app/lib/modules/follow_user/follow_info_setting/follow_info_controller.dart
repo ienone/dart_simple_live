@@ -156,6 +156,8 @@ class FollowInfoController extends BasePageController<FollowUser> {
         watchDuration: Duration(seconds: current.watchDurationSec).toHMSString(),
         watchDurationSec: current.watchDurationSec,
         tags: current.tags,
+        pinned: current.pinned,
+        manualOrder: current.manualOrder,
         metadataUpdatedAt: current.metadataUpdatedAt,
         lastWatchTime: current.lastWatchTime,
         syncDuration: current.syncDuration,

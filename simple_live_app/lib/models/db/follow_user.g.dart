@@ -33,6 +33,8 @@ class FollowUserAdapter extends TypeAdapter<FollowUser> {
       updateTime: fields[13] == null ? 0 : (fields[13] as num).toInt(),
       lastWatchTime: fields[14] == null ? 0 : (fields[14] as num?)?.toInt(),
       tags: (fields[15] as List?)?.cast<String>(),
+      pinned: fields[16] == null ? false : fields[16] as bool,
+      manualOrder: fields[17] == null ? '' : fields[17] as String,
       metadataUpdatedAt: fields[18] == null ? 0 : (fields[18] as num).toInt(),
     );
   }
@@ -40,7 +42,7 @@ class FollowUserAdapter extends TypeAdapter<FollowUser> {
   @override
   void write(BinaryWriter writer, FollowUser obj) {
     writer
-      ..writeByte(17)
+      ..writeByte(19)
       ..writeByte(0)
       ..write(obj.id)
       ..writeByte(1)
@@ -73,6 +75,10 @@ class FollowUserAdapter extends TypeAdapter<FollowUser> {
       ..write(obj.lastWatchTime)
       ..writeByte(15)
       ..write(obj.tags)
+      ..writeByte(16)
+      ..write(obj.pinned)
+      ..writeByte(17)
+      ..write(obj.manualOrder)
       ..writeByte(18)
       ..write(obj.metadataUpdatedAt);
   }

@@ -91,6 +91,18 @@ class FollowSettingsPage extends GetView<FollowAppSettingsController> {
                   children: [
                     Obx(
                       () => SettingsSwitch(
+                        key: const ValueKey('follow-custom-order-priority'),
+                        value: controller.appC.customOrderBeforeLive.value,
+                        title: "置顶与手动顺序优先",
+                        subtitle: "关闭时优先显示直播中的关注",
+                        onChanged: (value) {
+                          controller.appC.setCustomOrderBeforeLive(value);
+                          FollowService.instance.filterData();
+                        },
+                      ),
+                    ),
+                    Obx(
+                      () => SettingsSwitch(
                         value: controller.appC.hideOfflineFollow.value,
                         title: "隐藏离线关注",
                         onChanged: (e) {

@@ -13,6 +13,7 @@ import 'package:simple_live_app/app/utils.dart';
 import 'package:simple_live_app/models/db/follow_user.dart';
 import 'package:simple_live_app/models/db/follow_user_tag.dart';
 import 'package:simple_live_app/modules/follow_user/follow_tag_picker.dart';
+import 'package:simple_live_app/modules/follow_user/follow_order_dialog.dart';
 import 'package:simple_live_app/routes/app_navigation.dart';
 import 'package:simple_live_app/services/follow_service.dart';
 
@@ -42,6 +43,7 @@ class FollowUserController extends BasePageController<FollowUser> {
     SortMethod.userNameASC: "用户名A-Z",
     SortMethod.userNameDESC: "用户名Z-A",
     SortMethod.tag: "自定义标签",
+    SortMethod.manual: "手动排序",
   };
 
   final selectionMode = false.obs;
@@ -215,6 +217,11 @@ class FollowUserController extends BasePageController<FollowUser> {
     filterData();
   }
 
+  Future<void> showManualOrder() async {
+    await showFollowOrderDialog();
+    filterData();
+  }
+
   void showBottomMenu(FollowUser item) {
     Get.bottomSheet(
       SafeArea(
@@ -227,6 +234,25 @@ class FollowUserController extends BasePageController<FollowUser> {
               onTap: () {
                 Get.back();
                 setFollowTagDialog(item);
+              },
+            ),
+            ListTile(
+              key: const ValueKey('follow-action-pin'),
+              leading: Icon(item.pinned ? Icons.push_pin : Icons.push_pin_outlined),
+              title: Text(item.pinned ? '取消置顶' : '置顶'),
+              onTap: () async {
+                Get.back();
+                await FollowService.instance.setPinned(item, !item.pinned);
+                filterData();
+              },
+            ),
+            ListTile(
+              key: const ValueKey('follow-action-order'),
+              leading: const Icon(Icons.reorder),
+              title: const Text('手动排序'),
+              onTap: () {
+                Get.back();
+                showManualOrder();
               },
             ),
             ListTile(

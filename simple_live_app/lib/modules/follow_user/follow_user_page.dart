@@ -92,6 +92,17 @@ class FollowUserPage extends GetView<FollowUserController> {
                         ),
                       ),
                       PopupMenuItem(
+                        value: 3,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.reorder),
+                            AppStyle.hGap12,
+                            Text("手动排序"),
+                          ],
+                        ),
+                      ),
+                      PopupMenuItem(
                         value: 4,
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
@@ -113,6 +124,8 @@ class FollowUserPage extends GetView<FollowUserController> {
                       controller.showFollowStyleDialog();
                     } else if (value == 2) {
                       controller.showSortDialog();
+                    } else if (value == 3) {
+                      controller.showManualOrder();
                     }
                   },
                 )),
@@ -263,6 +276,16 @@ class FollowUserPage extends GetView<FollowUserController> {
                                               semanticLabel: '选择${item.userName}',
                                               onChanged: (_) => controller.toggleSelection(item),
                                             ),
+                                          ),
+                                        )
+                                      else if (item.pinned)
+                                        Positioned(
+                                          top: 8,
+                                          left: 8,
+                                          child: Tooltip(
+                                            message: '已置顶',
+                                            child: Icon(Icons.push_pin,
+                                                size: 18, color: Theme.of(context).colorScheme.primary),
                                           ),
                                         ),
                                     ],

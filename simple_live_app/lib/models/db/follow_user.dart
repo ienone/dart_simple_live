@@ -18,6 +18,8 @@ class FollowUser implements Mappable {
     this.watchDuration = "00:00:00",
     String tag = "全部",
     List<String>? tags,
+    this.pinned = false,
+    this.manualOrder = "",
     this.metadataUpdatedAt = 0,
     this.remark = "",
     this.romanName = "",
@@ -90,6 +92,12 @@ class FollowUser implements Mappable {
   @HiveField(15)
   List<String> tags;
 
+  @HiveField(16, defaultValue: false)
+  bool pinned;
+
+  @HiveField(17, defaultValue: '')
+  String manualOrder;
+
   /// Milliseconds, independent of the seconds-based deletion tombstone.
   @HiveField(18, defaultValue: 0)
   int metadataUpdatedAt;
@@ -131,6 +139,8 @@ class FollowUser implements Mappable {
       watchDuration: Duration(seconds: watchSeconds).toHMSString(),
       tag: json["tag"] ?? "全部",
       tags: json.containsKey('tags') ? List<String>.from(json['tags'] as List) : existing?.tags,
+      pinned: json.containsKey('pinned') ? json['pinned'] as bool : existing?.pinned ?? false,
+      manualOrder: json.containsKey('manualOrder') ? json['manualOrder'] as String : existing?.manualOrder ?? '',
       metadataUpdatedAt: json['metadataUpdatedAt'] as int? ?? existing?.metadataUpdatedAt ?? 0,
       remark: json["remark"] ?? "",
       romanName: json["romanName"] ?? "",
@@ -156,6 +166,8 @@ class FollowUser implements Mappable {
         "watchDuration": watchDuration ?? "00:00:00",
         "tag": tags.firstOrNull ?? '全部',
         "tags": tags,
+        "pinned": pinned,
+        "manualOrder": manualOrder,
         "metadataUpdatedAt": metadataUpdatedAt,
         "remark": remark,
         "romanName": romanName,

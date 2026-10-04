@@ -214,6 +214,15 @@ class FollowService extends GetxService {
         filterData();
       });
 
+  Future<void> setPinned(FollowUser item, bool pinned) => _lock.synchronized(() async {
+        final current = followList.firstWhereOrNull((follow) => follow.id == item.id);
+        if (current == null || current.pinned == pinned) return;
+        current.pinned = pinned;
+        current.markMetadataChanged();
+        await DBService.instance.addFollow(current);
+        filterData();
+      });
+
   int _tagMetadataClock(Iterable<String> names) {
     final selected = names.toSet();
     return DBService.instance.getAllFollowTagList().where((tag) => selected.contains(tag.tag)).fold<int>(
@@ -231,6 +240,33 @@ class FollowService extends GetxService {
   }
 
   /// Move relative to one neighbor in the saved manual order.
+  Future<void> moveFollow(FollowUser item, {FollowUser? before, FollowUser? after}) => _lock.synchronized(() async {
+        if (before != null && after != null) throw ArgumentError('Choose before or after');
+        final current = followList.firstWhereOrNull((follow) => follow.id == item.id);
+        if (current == null || before?.id == current.id || after?.id == current.id) return;
+        final settings = AppSettingsController.instance;
+        await _ensureManualOrder(followList);
+        final ordered = followList.where((follow) => follow.id != current.id).toList()
+          ..sort((a, b) => a.manualOrder.compareTo(b.manualOrder));
+        int index = ordered.length;
+        if (before != null) {
+          index = ordered.indexWhere((follow) => follow.id == before.id);
+        } else if (after != null) {
+          final previous = ordered.indexWhere((follow) => follow.id == after.id);
+          if (previous < 0) return;
+          index = previous + 1;
+        }
+        if (index < 0) return;
+        current.manualOrder = FractionalIndexing.generateKeyBetween(
+          index == 0 ? null : ordered[index - 1].manualOrder,
+          index == ordered.length ? null : ordered[index].manualOrder,
+        );
+        current.markMetadataChanged();
+        await DBService.instance.addFollow(current);
+        settings.setFollowSortMethod(SortMethod.manual);
+        filterData();
+      });
+
   void filterDataByTag(FollowUserTag tag) {
     curTagFollowList.assignAll(followList.where((follow) => tag.tag == '全部' || follow.tags.contains(tag.tag)));
     listSortByMethod(curTagFollowList, AppSettingsController.instance.followSortMethod.value);
@@ -269,6 +305,7 @@ class FollowService extends GetxService {
           await _ensureActiveTags(follow.tags);
           followList.add(follow);
         }
+        await _ensureManualOrder(followList);
         await DBService.instance.addFollow(follow);
         await _rebuildTagIndex();
         filterData();
@@ -332,6 +369,7 @@ class FollowService extends GetxService {
             await DBService.instance.addFollow(follow);
           }
         }
+        await _ensureManualOrder(list);
         getAllTagList();
 
         if (list.isEmpty) {
@@ -580,6 +618,8 @@ class FollowService extends GetxService {
         return index < 0 ? followTagList.length : index;
       },
     );
+    final pinnedCondition = SortCondition<FollowUser>(valueGetter: (item) => item.pinned ? 0 : 1);
+    final manualCondition = SortCondition<FollowUser>(valueGetter: (item) => item.manualOrder);
     final stableCondition = SortCondition<FollowUser>(valueGetter: (item) => item.id);
     final methodConditions = switch (sortMethod) {
       SortMethod.watchDuration => [watchDurationCondition],
@@ -588,9 +628,14 @@ class FollowService extends GetxService {
       SortMethod.userNameASC => [userNameASCCondition],
       SortMethod.userNameDESC => [userNameDESCCondition],
       SortMethod.tag => [tagCondition, watchDurationCondition],
+      SortMethod.manual => [manualCondition],
     };
+    final customFirst = AppSettingsController.instance.customOrderBeforeLive.value;
     list.dynamicSort([
-      liveCondition,
+      if (!customFirst) liveCondition,
+      pinnedCondition,
+      if (customFirst && sortMethod == SortMethod.manual) manualCondition,
+      if (customFirst) liveCondition,
       ...methodConditions,
       stableCondition,
     ]);
@@ -758,6 +803,7 @@ class FollowService extends GetxService {
   Future<void> followUserAllDataCheck() => withFollowWrite(() async {
         final previous = {for (final follow in followList) follow.id: follow};
         final follows = DBService.instance.getFollowList();
+        await _ensureManualOrder(follows);
         for (final follow in follows) {
           follow.replaceTags(follow.tags);
           follow.romanName = PinyinHelper.getShortPinyin(
@@ -782,6 +828,40 @@ class FollowService extends GetxService {
       return true;
     } catch (_) {
       return false;
+    }
+  }
+
+  Future<void> _ensureManualOrder(List<FollowUser> follows) async {
+    final ordered = follows.toList()
+      ..sort((a, b) {
+        final validA = _validOrderKey(a.manualOrder);
+        final validB = _validOrderKey(b.manualOrder);
+        if (validA != validB) return validA ? -1 : 1;
+        if (validA) {
+          final key = a.manualOrder.compareTo(b.manualOrder);
+          if (key != 0) return key;
+        } else {
+          final added = b.addTime.compareTo(a.addTime);
+          if (added != 0) return added;
+        }
+        return a.id.compareTo(b.id);
+      });
+    String? lastKey;
+    for (var i = 0; i < ordered.length; i++) {
+      final follow = ordered[i];
+      if (!_validOrderKey(follow.manualOrder) || (lastKey != null && follow.manualOrder.compareTo(lastKey) <= 0)) {
+        String? nextKey;
+        for (final next in ordered.skip(i + 1)) {
+          if (_validOrderKey(next.manualOrder) && (lastKey == null || next.manualOrder.compareTo(lastKey) > 0)) {
+            nextKey = next.manualOrder;
+            break;
+          }
+        }
+        follow.manualOrder = FractionalIndexing.generateKeyBetween(lastKey, nextKey);
+        // Backfills do not compete with explicit metadata edits from another device.
+        await DBService.instance.addFollow(follow);
+      }
+      lastKey = follow.manualOrder;
     }
   }
 

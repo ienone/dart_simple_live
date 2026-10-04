@@ -52,8 +52,10 @@ class AppSettingsController extends GetxController {
     // and now, value was set 0..8, the value needs ..=FontWeight[index] after
     // migration, so marked it, next migration depends on canvas_danmaku upgrade
     danmakuFontClamped.value = LocalStorageService.instance.getValue(LocalStorageService.kDanmakuFontClamped, false);
-    danmakuFontClampUpSens.value = LocalStorageService.instance.getValue(LocalStorageService.kDanmakuFontClampUpSens, 9.0);
-    danmakuFontClampDownSens.value = LocalStorageService.instance.getValue(LocalStorageService.kDanmakuFontClampDownSens, 5.0);
+    danmakuFontClampUpSens.value =
+        LocalStorageService.instance.getValue(LocalStorageService.kDanmakuFontClampUpSens, 9.0);
+    danmakuFontClampDownSens.value =
+        LocalStorageService.instance.getValue(LocalStorageService.kDanmakuFontClampDownSens, 5.0);
 
     hardwareDecode.value = LocalStorageService.instance.getValue(LocalStorageService.kHardwareDecode, true);
     chatTextSize.value = LocalStorageService.instance.getValue(LocalStorageService.kChatTextSize, 14.0);
@@ -200,6 +202,9 @@ class AppSettingsController extends GetxController {
     followSortMethod.value = SortMethodStore.fromStore(LocalStorageService.instance
         .getValue(LocalStorageService.kFollowSortMethod, SortMethod.watchDuration.storeValue));
 
+    customOrderBeforeLive.value =
+        LocalStorageService.instance.getValue(LocalStorageService.kCustomOrderBeforeLive, false);
+
     followStyleNotGrid.value = LocalStorageService.instance.getValue(LocalStorageService.kFollowStyleNotGrid, true);
 
     hideOfflineFollow.value = LocalStorageService.instance.getValue(LocalStorageService.kHideOfflineFollow, false);
@@ -217,11 +222,11 @@ class AppSettingsController extends GetxController {
 
   Future<void> initDataPath() async {
     dbPath = (await getApplicationSupportDirectory()).path;
-    if(!Platform.isAndroid && !Platform.isIOS){
+    if (!Platform.isAndroid && !Platform.isIOS) {
       // linux 应该有问题，但我不熟悉，先这么写
       var pathPortable = p.join(p.dirname(Platform.resolvedExecutable), 'data_hive_ce');
       bool dirPortableExist = await Directory(pathPortable).exists();
-      if(dirPortableExist){
+      if (dirPortableExist) {
         dbPath = pathPortable;
       }
     }
@@ -361,6 +366,7 @@ class AppSettingsController extends GetxController {
     danmakuFontClamped.value = e;
     LocalStorageService.instance.setValue(LocalStorageService.kDanmakuFontClamped, e);
   }
+
   var danmakuFontResize = 16.0;
 
   var danmakuFontClampUpSens = 9.0.obs;
@@ -532,16 +538,17 @@ class AppSettingsController extends GetxController {
     pipHideDanmu.value = e;
     LocalStorageService.instance.setValue(LocalStorageService.kPIPHideDanmu, e);
   }
+
   /// window Setting
   // 开屏自动最大化
   var windowMaxAuto = false.obs;
-  void setWindowMaxAuto(bool e){
+  void setWindowMaxAuto(bool e) {
     windowMaxAuto.value = e;
     LocalStorageService.instance.setValue(LocalStorageService.kWindowMaxAuto, e);
   }
 
   var windowMaxState = false.obs;
-  void setWindowMaxState(bool e){
+  void setWindowMaxState(bool e) {
     windowMaxState.value = e;
     LocalStorageService.instance.setValue(LocalStorageService.kWindowMaxState, e);
   }
@@ -731,6 +738,13 @@ class AppSettingsController extends GetxController {
   }
 
   var followSortMethod = SortMethod.watchDuration.obs;
+
+  var customOrderBeforeLive = false.obs;
+
+  void setCustomOrderBeforeLive(bool value) {
+    customOrderBeforeLive.value = value;
+    LocalStorageService.instance.setValue(LocalStorageService.kCustomOrderBeforeLive, value);
+  }
 
   void setFollowSortMethod(SortMethod e) {
     followSortMethod.value = e;

@@ -61,6 +61,7 @@ enum SortMethod {
   userNameASC,
   userNameDESC,
   tag,
+  manual,
 }
 
 extension SortMethodStore on SortMethod {

@@ -52,6 +52,14 @@ class FollowUserItem extends StatelessWidget {
         TextSpan(
           text: item.remark?.isNotEmpty == true ? item.remark : item.userName,
           children: [
+            if (item.pinned)
+              const WidgetSpan(
+                alignment: ui.PlaceholderAlignment.middle,
+                child: Padding(
+                  padding: EdgeInsets.only(left: 6),
+                  child: Tooltip(message: '已置顶', child: Icon(Icons.push_pin, size: 14)),
+                ),
+              ),
             WidgetSpan(
               alignment: ui.PlaceholderAlignment.middle,
               child: Obx(
