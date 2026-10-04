@@ -54,7 +54,9 @@ class MigrationService {
   }
 
   /// 数据迁移根据版本：from 1.7.8
-  static Future<void> migrateDataByVersion() async {
+  static Future<void> migrateDataByVersion() => FollowService.instance.withFollowWrite(_migrateDataByVersion);
+
+  static Future<void> _migrateDataByVersion() async {
     int curAppVer = Utils.parseVersion(Utils.packageInfo.version);
     int curDBVer = LocalStorageService.instance.getValue(LocalStorageService.kHiveDbVer, 10708);
     Log.i("curDBVer: $curDBVer, curAppVer: $curAppVer");
@@ -70,9 +72,8 @@ class MigrationService {
       for (int i = 0; i < followList.length; i++) {
         for (FollowUserTag tag in tagList) {
           if (tag.userId.contains(followList[i].id)) {
-            followList[i].tag = tag.tag;
-            DBService.instance.addFollow(followList[i]);
-            break;
+            followList[i].replaceTags([...followList[i].tags, tag.tag]);
+            await DBService.instance.addFollow(followList[i]);
           }
         }
       }
@@ -93,7 +94,7 @@ class MigrationService {
       var followList = DBService.instance.followBox.values.toList();
       for (FollowUser follow in followList) {
         follow.watchDurationSec = follow.watchDuration!.toDuration().inSeconds;
-        DBService.instance.addFollow(follow);
+        await DBService.instance.addFollow(follow);
       }
     }
     // set follow.lastWatchTime as cur timestamp after v10810
@@ -103,7 +104,7 @@ class MigrationService {
       for (FollowUser follow in followList) {
         if (follow.lastWatchTime == 0) {
           follow.lastWatchTime = now;
-          DBService.instance.addFollow(follow);
+          await DBService.instance.addFollow(follow);
         }
       }
       Log.i("Migration: initialized lastWatchTime for ${followList.length} follows");

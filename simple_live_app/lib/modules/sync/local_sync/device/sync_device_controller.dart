@@ -33,9 +33,16 @@ class SyncDeviceController extends BaseController {
       var overlay = await showOverlayDialog();
       SmartDialog.showLoading(msg: "同步中...");
       var users = DBService.instance.getFollowList();
-      var tags = DBService.instance.getFollowTagList();
-      var data = json.encode(users.map((e) => e.toJson()).toList());
-      var dataT = json.encode(tags.map((e) => e.toJson()).toList());
+      var tags = DBService.instance.getAllFollowTagList();
+      final records = users.map((user) => user.toJson()).toList();
+      final definitions = tags.map((tag) => tag.toJson()).toList();
+      if (records.isNotEmpty) {
+        // Apply a legitimate tag re-add with its membership in one receive step.
+        // Older peers ignore the extra field and still accept the follow list.
+        records.first['tagDefinitions'] = definitions;
+      }
+      var data = json.encode(records);
+      var dataT = json.encode(definitions);
       await request.syncFollow(client, data, overlay: overlay);
       // 标签和关注必须同时同步
       await request.syncTag(client, dataT, overlay: overlay);

@@ -210,7 +210,7 @@ class RemoteSyncWebDAVController extends BaseController {
     // history.watchSec 有可能被用户删除掉了/存在
     // follow.watchSec 在4da4267d690d4b7644eea3b85fca8c5fb61da60a前关注存在和history有数据差异
     // todo: 需要一次数据同步后，并限制用户完全删除history
-    MigrationService.migrateDataByVersion();
+    await MigrationService.migrateDataByVersion();
   }
 
   // ui控制--密码可见控制

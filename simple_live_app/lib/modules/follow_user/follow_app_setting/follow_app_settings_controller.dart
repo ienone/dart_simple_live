@@ -21,6 +21,7 @@ class FollowAppSettingsController extends BaseController {
 
   // 用户自定义标签
   RxList<FollowUserTag> userTagList = <FollowUserTag>[].obs;
+  final _savingTagOrder = false.obs;
 
   // 用户自定义条件
   Rx<int> takeLast = 15.obs;
@@ -56,38 +57,33 @@ class FollowAppSettingsController extends BaseController {
     Log.i('删除tag${tag.tag}');
   }
 
-  void addTag(String tag) async {
-    await FollowService.instance.addFollowUserTag(tag);
-    updateTagList();
-  }
-
-  Future<void> updateTag(FollowUserTag followUserTag) async {
-    await FollowService.instance.updateFollowUserTag(followUserTag);
-  }
-
-  void updateTagName(FollowUserTag followUserTag, String newTagName) {
-    // 未操作
-    if (followUserTag.tag == newTagName) {
+  Future<void> updateTagOrder(int oldIndex, int newIndex) async {
+    if (_savingTagOrder.value ||
+        oldIndex == newIndex ||
+        oldIndex < 0 ||
+        oldIndex >= userTagList.length ||
+        newIndex < 0 ||
+        newIndex >= userTagList.length) {
       return;
     }
-    // 避免重名
-    if (userTagList.any((item) => item.tag == newTagName)) {
-      SmartDialog.showToast("标签名重复，修改失败");
-      return;
+    _savingTagOrder.value = true;
+    try {
+      final reordered = userTagList.toList();
+      final item = reordered.removeAt(oldIndex);
+      final newTagKey = FractionalIndexing.generateKeyBetween(
+        newIndex > 0 ? reordered[newIndex - 1].id : null,
+        newIndex < reordered.length ? reordered[newIndex].id : null,
+      );
+      final newTag = FollowUserTag(id: newTagKey, tag: item.tag, userId: item.userId);
+      reordered.insert(newIndex, item);
+      userTagList.assignAll(reordered);
+      await FollowService.instance.updateFollowTagOrder(item, newTag);
+    } catch (_) {
+      SmartDialog.showToast('排序未保存，请重试');
+    } finally {
+      updateTagList();
+      _savingTagOrder.value = false;
     }
-    FollowService.instance.updateTagName(followUserTag, newTagName);
-    SmartDialog.showToast("标签名修改成功");
-    updateTagList();
-  }
-
-  void updateTagOrder(int oldIndex, int newIndex) {
-    if (newIndex > oldIndex) newIndex -= 1; // 处理索引调整
-    final item = userTagList.removeAt(oldIndex);
-    String newTagKey = FractionalIndexing.generateKeyBetween(newIndex > 0 ? userTagList[newIndex - 1].id : null,
-        newIndex < userTagList.length ? userTagList[newIndex].id : null);
-    final newTag = FollowUserTag(id: newTagKey, tag: item.tag, userId: item.userId);
-    FollowService.instance.updateFollowTagOrder(item, newTag);
-    updateTagList();
   }
 
   Future<void> followDataCheck() async {
@@ -101,51 +97,49 @@ class FollowAppSettingsController extends BaseController {
       title: '标签管理',
       child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         AppStyle.divider,
-        ListTile(
-          title: const Text("添加标签"),
-          leading: const Icon(Icons.add),
-          onTap: () {
-            editTagDialog("添加标签");
-          },
-        ),
+        Obx(() => ListTile(
+              title: const Text("添加标签"),
+              leading: const Icon(Icons.add),
+              onTap: _savingTagOrder.value
+                  ? null
+                  : () {
+                      editTagDialog("添加标签");
+                    },
+            )),
         AppStyle.divider,
         // 列表内容
         Expanded(
           child: Obx(
-            () => ReorderableListView.builder(
-              buildDefaultDragHandles: false,
-              itemCount: userTagList.length,
-              itemBuilder: (context, index) {
-                // 偏移
-                FollowUserTag item = userTagList[index];
-                return ListTile(
-                  key: ValueKey(item.id),
-                  title: GestureDetector(
-                    child: Text(item.tag),
-                    onLongPress: () {
-                      {
-                        editTagDialog("修改标签", followUserTag: item);
-                      }
-                    },
-                  ),
-                  leading: IconButton(
-                    icon: const Icon(Icons.delete),
-                    onPressed: () {
-                      removeTag(item);
-                    },
-                  ),
-                  trailing: ReorderableDelayedDragStartListener(
-                    index: index,
-                    child: const Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 12.0),
-                      child: Icon(Icons.drag_handle),
+            () => AbsorbPointer(
+              absorbing: _savingTagOrder.value,
+              child: ReorderableListView.builder(
+                buildDefaultDragHandles: false,
+                itemCount: userTagList.length,
+                itemBuilder: (context, index) {
+                  // 偏移
+                  FollowUserTag item = userTagList[index];
+                  return ListTile(
+                    key: ValueKey(item.id),
+                    title: Text(item.tag),
+                    onTap: () => editTagDialog("修改标签", followUserTag: item),
+                    leading: IconButton(
+                      tooltip: '删除标签',
+                      icon: const Icon(Icons.delete),
+                      onPressed: () {
+                        removeTag(item);
+                      },
                     ),
-                  ),
-                );
-              },
-              onReorderItem: (int oldIndex, int newIndex) {
-                updateTagOrder(oldIndex, newIndex);
-              },
+                    trailing: ReorderableDelayedDragStartListener(
+                      index: index,
+                      child: const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 12.0),
+                        child: Icon(Icons.drag_handle),
+                      ),
+                    ),
+                  );
+                },
+                onReorderItem: updateTagOrder,
+              ),
             ),
           ),
         ),
@@ -153,79 +147,47 @@ class FollowAppSettingsController extends BaseController {
     );
   }
 
-  void editTagDialog(String title, {FollowUserTag? followUserTag}) {
-    final TextEditingController tagEditController = TextEditingController(text: followUserTag?.tag);
-    bool upMode = title == "添加标签" ? true : false;
-    Get.dialog(
-      AlertDialog(
-        contentPadding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12.0),
-        ),
-        content: SingleChildScrollView(
-          padding: EdgeInsets.only(
-            bottom: MediaQuery.of(Get.context!).viewInsets.bottom,
+  Future<void> editTagDialog(String title, {FollowUserTag? followUserTag}) async {
+    var input = followUserTag?.tag ?? '';
+    String? error;
+    final name = await Get.dialog<String>(
+      StatefulBuilder(builder: (context, setDialogState) {
+        void submit() {
+          final value = input.trim();
+          if (value.isEmpty || const ['全部', '直播中', '未开播'].contains(value)) {
+            setDialogState(() => error = '请输入其他标签名');
+          } else if (userTagList.any((tag) => tag.tag == value && tag.id != followUserTag?.id)) {
+            setDialogState(() => error = '标签已存在');
+          } else {
+            Get.back(result: value);
+          }
+        }
+
+        return AlertDialog(
+          title: Text(title),
+          content: TextFormField(
+            key: const ValueKey('follow-tag-manage-name'),
+            initialValue: input,
+            autofocus: true,
+            maxLength: 30,
+            decoration: InputDecoration(labelText: '标签名', errorText: error),
+            onChanged: (value) => input = value,
+            onFieldSubmitted: (_) => submit(),
           ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                title,
-                style: const TextStyle(
-                  fontSize: 18,
-                ),
-              ),
-              TextField(
-                controller: tagEditController,
-                minLines: 1,
-                maxLines: 1,
-                decoration: InputDecoration(
-                  border: const OutlineInputBorder(),
-                  contentPadding: AppStyle.edgeInsetsA12,
-                  enabledBorder: OutlineInputBorder(
-                    borderSide: BorderSide(
-                      color: Colors.grey.withValues(
-                        alpha: .2,
-                      ),
-                    ),
-                  ),
-                ),
-                onSubmitted: (tag) {
-                  upMode ? addTag(tagEditController.text) : updateTagName(followUserTag!, tagEditController.text);
-                  Get.back();
-                },
-              ),
-              SizedBox(
-                width: double.infinity,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    TextButton(
-                      onPressed: () {
-                        Get.back();
-                      },
-                      child: const Text('否'),
-                    ),
-                    TextButton(
-                      onPressed: () {
-                        upMode
-                            ? addTag(tagEditController.text)
-                            : updateTagName(
-                                followUserTag!,
-                                tagEditController.text,
-                              );
-                        Get.back();
-                      },
-                      child: const Text('是'),
-                    ),
-                  ],
-                ),
-              )
-            ],
-          ),
-        ),
-      ),
+          actions: [
+            TextButton(onPressed: () => Get.back(), child: const Text('取消')),
+            TextButton(onPressed: submit, child: const Text('确定')),
+          ],
+        );
+      }),
     );
+    if (name == null || name == followUserTag?.tag) return;
+    if (followUserTag == null) {
+      await FollowService.instance.addFollowUserTag(name);
+    } else {
+      await FollowService.instance.updateTagName(followUserTag, name);
+    }
+    updateTagList();
   }
 
   // 关注清理功能
@@ -236,12 +198,6 @@ class FollowAppSettingsController extends BaseController {
     }
     SmartDialog.showLoading(msg: "清理中");
     for (var follow in cleanPool) {
-      // 取消关注同时删除标签内的 userId
-      if (follow.tag != "全部") {
-        var tag = userTagList.firstWhere((tag) => tag.tag == follow.tag);
-        tag.userId.remove(follow.id);
-        await updateTag(tag);
-      }
       await FollowService.instance.removeFollowUser(follow.id);
     }
     SmartDialog.dismiss();

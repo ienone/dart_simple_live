@@ -5,8 +5,9 @@ import 'package:simple_live_app/app/controller/base_controller.dart';
 import 'package:simple_live_app/app/sites.dart';
 import 'package:simple_live_app/app/utils.dart';
 import 'package:simple_live_app/app/utils/url_parse.dart';
+import 'package:simple_live_app/app/utils/extensions/duration_2_str_utils.dart';
 import 'package:simple_live_app/models/db/follow_user.dart' show FollowUser;
-import 'package:simple_live_app/models/db/follow_user_tag.dart';
+import 'package:simple_live_app/modules/follow_user/follow_tag_picker.dart';
 import 'package:simple_live_app/models/db/history.dart';
 import 'package:simple_live_app/services/follow_service.dart';
 import 'package:simple_live_app/services/history_service.dart';
@@ -14,10 +15,6 @@ import 'package:simple_live_core/simple_live_core.dart';
 
 class FollowInfoController extends BasePageController<FollowUser> {
   final Rxn<FollowUser> followUser = Rxn<FollowUser>();
-
-  // 下拉可选标签：只包含“全部”+用户自定义标签
-  final RxList<FollowUserTag> tagOptions = <FollowUserTag>[].obs;
-  final Rx<FollowUserTag?> selectedTag = Rx<FollowUserTag?>(null);
 
   // 平台迁移预留：列出除当前平台外的其余平台
   final RxList<Site> migrationSites = <Site>[].obs;
@@ -36,26 +33,7 @@ class FollowInfoController extends BasePageController<FollowUser> {
       followUser.value = args['follow'] as FollowUser;
     }
 
-    _initTagOptions();
     _initMigrationSites();
-  }
-
-  void _initTagOptions() {
-    final List<FollowUserTag> options = FollowService.instance.getTagOptionsWithAll();
-    tagOptions.assignAll(options);
-
-    // 设置选中项
-    final current = followUser.value;
-    if (current != null) {
-      FollowUserTag? matched;
-      for (final e in options) {
-        if (e.tag == current.tag) {
-          matched = e;
-          break;
-        }
-      }
-      selectedTag.value = matched ?? options.first;
-    }
   }
 
   void _initMigrationSites() {
@@ -70,11 +48,12 @@ class FollowInfoController extends BasePageController<FollowUser> {
     );
   }
 
-  void changeTag(FollowUserTag newTag) {
+  Future<void> editTags() async {
     final current = followUser.value;
     if (current == null) return;
-    FollowService.instance.setFollowTag(current, newTag);
-    selectedTag.value = newTag;
+    final tags = await showFollowTagPicker(selectedTags: current.tags);
+    if (tags == null) return;
+    await FollowService.instance.setFollowTags(current, tags);
     followUser.refresh();
   }
 
@@ -147,6 +126,12 @@ class FollowInfoController extends BasePageController<FollowUser> {
   }
 
   @override
+  void onClose() {
+    migrationUrlController.dispose();
+    super.onClose();
+  }
+
+  @override
   Future<void> refreshData() async {
     pageLoadding.value = true;
     var site = Sites.allSites[followUser.value?.siteId]!;
@@ -162,18 +147,21 @@ class FollowInfoController extends BasePageController<FollowUser> {
     LiveRoomDetail detail = await targetSite.liveSite.getRoomDetail(roomId: targetRoomId);
     // 复制并更新关键信息
     final FollowUser newFollow = FollowUser(
-      id: '${targetSite.id}_$targetRoomId',
-      roomId: targetRoomId,
-      siteId: targetSite.id,
-      userName: detail.userName,
-      face: detail.userAvatar,
-      addTime: current.addTime,
-      watchDuration: current.watchDuration,
-      watchDurationSec: current.watchDurationSec,
-      tag: current.tag,
-      remark: current.remark,
-      romanName: current.romanName
-    )..liveStatus.value = current.liveStatus.value;
+        id: '${targetSite.id}_$targetRoomId',
+        roomId: targetRoomId,
+        siteId: targetSite.id,
+        userName: detail.userName,
+        face: detail.userAvatar,
+        addTime: current.addTime,
+        watchDuration: Duration(seconds: current.watchDurationSec).toHMSString(),
+        watchDurationSec: current.watchDurationSec,
+        tags: current.tags,
+        metadataUpdatedAt: current.metadataUpdatedAt,
+        lastWatchTime: current.lastWatchTime,
+        syncDuration: current.syncDuration,
+        remark: current.remark,
+        romanName: current.romanName)
+      ..liveStatus.value = current.liveStatus.value;
 
     // 替换关注
     await FollowService.instance.removeFollowUser(current.id);
@@ -191,7 +179,7 @@ class FollowInfoController extends BasePageController<FollowUser> {
       siteId: targetSite.id,
       userName: detail.userName,
       face: detail.userAvatar,
-      watchDuration: newFollow.watchDuration,
+      watchDuration: Duration(seconds: newFollow.watchDurationSec).toHMSString(),
       updateTime: DateTime.now(),
     );
     await HistoryService.instance.addOrUpdateHistory(newHistory);

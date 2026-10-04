@@ -10,8 +10,7 @@ import 'package:simple_live_app/app/controller/app_settings_controller.dart';
 import 'package:simple_live_app/app/event_bus.dart';
 import 'package:simple_live_app/app/log.dart';
 import 'package:simple_live_app/app/utils.dart';
-import 'package:simple_live_app/models/db/follow_user.dart';
-import 'package:simple_live_app/models/db/follow_user_tag.dart';
+import 'package:simple_live_app/services/follow_sync.dart';
 import 'package:simple_live_app/models/db/history.dart';
 import 'package:simple_live_app/services/bilibili_account_service.dart';
 import 'package:simple_live_app/services/db_service.dart';
@@ -154,14 +153,15 @@ class SyncService extends GetxService {
   }
 
   /// 读取本地IP
-  /// - 如果是wifi，直接获取wifi的IP
-  /// - 如果是有线，获取所有的IP，找到全部的IP
+  /// Desktop interfaces include Ethernet and do not require NetworkManager.
   Future<String> getLocalIP() async {
     String? ip = "";
-    try {
-      ip = await networkInfo.getWifiIP();
-    } catch (e) {
-      Log.logPrint(e);
+    if (!Platform.isLinux) {
+      try {
+        ip = await networkInfo.getWifiIP();
+      } catch (e) {
+        Log.logPrint(e);
+      }
     }
     try {
       if (ip == null || ip.isEmpty) {
@@ -246,18 +246,10 @@ class SyncService extends GetxService {
       var overlay = int.parse(request.requestedUri.queryParameters['overlay'] ?? '0');
 
       var body = await request.readAsString();
-      Log.d('_syncFollowUserReuqest: $body');
       var jsonBody = json.decode(body);
-      if (overlay == 1) {
-        await DBService.instance.followBox.clear();
-      }
-      for (var item in jsonBody) {
-        var user = FollowUser.fromJson(item);
-        await DBService.instance.followBox.put(user.id, user);
-      }
+      await importSyncedFollows(jsonBody, overlay: overlay == 1);
 
       SmartDialog.showToast('已同步关注用户列表');
-      EventBus.instance.emit(Constant.kUpdateFollow, 0);
       return toJsonResponse({
         'status': true,
         'message': 'success',
@@ -276,18 +268,10 @@ class SyncService extends GetxService {
       var overlay = int.parse(request.requestedUri.queryParameters['overlay'] ?? '0');
 
       var body = await request.readAsString();
-      Log.d('_syncFollowUserTagRequest: $body');
       var jsonBody = json.decode(body);
-      if (overlay == 1) {
-        await DBService.instance.tagBox.clear();
-      }
-      for (var item in jsonBody) {
-        var tag = FollowUserTag.fromJson(item);
-        await DBService.instance.tagBox.put(tag.id, tag);
-      }
+      await importSyncedTags(jsonBody, overlay: overlay == 1);
 
       SmartDialog.showToast('已同步标签列表');
-      EventBus.instance.emit(Constant.kUpdateFollow, 0);
       return toJsonResponse({
         'status': true,
         'message': 'success',
@@ -366,7 +350,6 @@ class SyncService extends GetxService {
   Future<shelf.Response> _syncBiliAccountReuqest(shelf.Request request) async {
     try {
       var body = await request.readAsString();
-      Log.d('_syncBiliAccountReuqest: $body');
       var jsonBody = json.decode(body);
       var cookie = jsonBody['cookie'];
       BiliBiliAccountService.instance.setCookie(cookie);
@@ -388,14 +371,13 @@ class SyncService extends GetxService {
   Future<shelf.Response> _syncDouyuAccountRequest(shelf.Request request) async {
     try {
       var body = await request.readAsString();
-      Log.d('_syncDouyuAccountRequest: $body');
       var jsonBody = json.decode(body);
       // 和 client data 保持一致
       var cookie = jsonBody['cookie'];
       var did = jsonBody['dy_did'];
       var ltp0 = jsonBody['ltp0'];
       PlatformService.instance.setDouyuCookie(cookie);
-      PlatformService.instance.setDouyuDidAndLtp0(did,ltp0);
+      PlatformService.instance.setDouyuDidAndLtp0(did, ltp0);
       SmartDialog.showToast('已同步斗鱼账号');
       return toJsonResponse({
         'status': true,
@@ -408,11 +390,11 @@ class SyncService extends GetxService {
       });
     }
   }
+
   /// 同步抖音账号
   Future<shelf.Response> _syncDouyinAccountRequest(shelf.Request request) async {
     try {
       var body = await request.readAsString();
-      Log.d('_syncDouyinAccountRequest: $body');
       var jsonBody = json.decode(body);
       var cookie = jsonBody['cookie'];
       PlatformService.instance.setDouyinCookie(cookie);

@@ -3,6 +3,7 @@ import 'package:get/get.dart';
 import 'package:remixicon/remixicon.dart';
 import 'package:simple_live_app/app/app_style.dart';
 import 'package:simple_live_app/app/sites.dart';
+import 'package:simple_live_app/app/utils/extensions/duration_2_str_utils.dart';
 import 'package:simple_live_app/models/db/follow_user.dart';
 import 'package:simple_live_app/widgets/net_image.dart';
 import 'dart:ui' as ui;
@@ -13,12 +14,18 @@ class FollowUserItem extends StatelessWidget {
   final Function()? onTap;
   final Function()? onLongPress;
   final bool playing;
+  final bool selectionMode;
+  final bool selected;
+  final VoidCallback? onSelected;
   const FollowUserItem({
     required this.item,
     this.onRemove,
     this.onTap,
     this.onLongPress,
     this.playing = false,
+    this.selectionMode = false,
+    this.selected = false,
+    this.onSelected,
     super.key,
   });
 
@@ -27,12 +34,20 @@ class FollowUserItem extends StatelessWidget {
     var site = Sites.allSites[item.siteId]!;
     return ListTile(
       contentPadding: AppStyle.edgeInsetsL16.copyWith(right: 4),
-      leading: NetImage(
-        item.face,
-        width: 48,
-        height: 48,
-        borderRadius: 24,
-      ),
+      selected: selected,
+      leading: selectionMode
+          ? Checkbox(
+              key: ValueKey('follow-select-${item.id}'),
+              value: selected,
+              semanticLabel: '选择${item.userName}',
+              onChanged: (_) => onSelected?.call(),
+            )
+          : NetImage(
+              item.face,
+              width: 48,
+              height: 48,
+              borderRadius: 24,
+            ),
       title: Text.rich(
         TextSpan(
           text: item.remark?.isNotEmpty == true ? item.remark : item.userName,
@@ -71,8 +86,7 @@ class FollowUserItem extends StatelessWidget {
           ],
         ),
       ),
-      subtitle: Wrap(
-        runSpacing: 1.0,
+      subtitle: Row(
         children: [
           Image.asset(
             site.logo,
@@ -88,41 +102,46 @@ class FollowUserItem extends StatelessWidget {
           ),
           AppStyle.hGap4,
           Text(
-            item.watchDuration ?? "00:00:00",
+            Duration(seconds: item.watchDurationSec).toHMSString(),
             style: const TextStyle(
               fontSize: 12,
               color: Colors.grey,
             ),
           ),
           AppStyle.hGap4,
-          Text(
-            item.tag.length > 8 ? '${item.tag.substring(0, 8)}...' : item.tag,
-            style: const TextStyle(
-              fontSize: 12,
-              color: Colors.grey,
+          Flexible(
+            child: Text(
+              item.tags.join(' · '),
+              style: const TextStyle(
+                fontSize: 12,
+                color: Colors.grey,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
           ),
         ],
       ),
-      trailing: playing
-          ? const SizedBox(
-              width: 64,
-              child: Center(
-                child: Icon(
-                  Icons.play_arrow,
-                ),
-              ),
-            )
-          : (onRemove == null
-              ? null
-              : IconButton(
-                  onPressed: () {
-                    onRemove?.call();
-                  },
-                  icon: const Icon(Remix.dislike_line),
-                )),
+      trailing: selectionMode
+          ? null
+          : playing
+              ? const SizedBox(
+                  width: 64,
+                  child: Center(
+                    child: Icon(
+                      Icons.play_arrow,
+                    ),
+                  ),
+                )
+              : (onRemove == null
+                  ? null
+                  : IconButton(
+                      tooltip: '取消关注',
+                      onPressed: () {
+                        onRemove?.call();
+                      },
+                      icon: const Icon(Remix.dislike_line),
+                    )),
       onTap: onTap,
       onLongPress: onLongPress,
     );

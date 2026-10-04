@@ -1,5 +1,4 @@
 import 'package:material_ui/material_ui.dart';
-import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
 import 'package:remixicon/remixicon.dart';
 import 'package:simple_live_app/app/app_style.dart';
@@ -29,88 +28,122 @@ class FollowUserPage extends GetView<FollowUserController> {
     }
     return Scaffold(
       appBar: AppBar(
-        title: const Text("关注用户"),
+        title: Obx(() => Text(controller.selectionMode.value ? '已选 ${controller.selectedIds.length} 项' : '关注用户')),
         actions: [
-          PopupMenuButton(
-            itemBuilder: (context) {
-              return const [
-                PopupMenuItem(
-                  value: 0,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Remix.trophy_line),
-                      AppStyle.hGap12,
-                      Text("赛事订阅"),
-                    ],
-                  ),
-                ),
-                PopupMenuItem(
-                  value: 1,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Remix.blender_line),
-                      AppStyle.hGap12,
-                      Text("模式切换"),
-                    ],
-                  ),
-                ),
-                PopupMenuItem(
-                  value: 2,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Remix.sort_asc),
-                      AppStyle.hGap12,
-                      Text("按序排列"),
-                    ],
-                  ),
-                ),
-                PopupMenuItem(
-                  value: 4,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Remix.heart_line),
-                      AppStyle.hGap12,
-                      Text("关注设置"),
-                    ],
-                  ),
-                ),
-              ];
-            },
-            onSelected: (value) {
-              if (value == 4) {
-                Get.toNamed(RoutePath.kSettingsFollow);
-              } else if (value == 0) {
-                SmartDialog.showToast("此功能暂未开放！敬请期待！");
-              } else if (value == 1) {
-                controller.showFollowStyleDialog();
-              } else if (value == 2) {
-                controller.showSortDialog();
-              }
-            },
-          ),
+          Obx(() => controller.selectionMode.value
+              ? Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      key: const ValueKey('follow-select-visible'),
+                      tooltip: '全选当前列表',
+                      onPressed: controller.toggleSelectVisible,
+                      icon: const Icon(Icons.select_all),
+                    ),
+                    PopupMenuButton<bool>(
+                      key: const ValueKey('follow-batch-tags'),
+                      tooltip: '批量标签',
+                      enabled: controller.selectedIds.isNotEmpty,
+                      icon: const Icon(Remix.price_tag_3_line),
+                      onSelected: (remove) => controller.batchTags(remove: remove),
+                      itemBuilder: (_) => const [
+                        PopupMenuItem(value: false, child: Text('添加标签')),
+                        PopupMenuItem(value: true, child: Text('移除标签')),
+                      ],
+                    ),
+                  ],
+                )
+              : PopupMenuButton<int>(
+                  key: const ValueKey('follow-menu'),
+                  tooltip: '关注选项',
+                  itemBuilder: (context) {
+                    return const [
+                      PopupMenuItem(
+                        value: 0,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.checklist),
+                            AppStyle.hGap12,
+                            Text("多选"),
+                          ],
+                        ),
+                      ),
+                      PopupMenuItem(
+                        value: 1,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Remix.blender_line),
+                            AppStyle.hGap12,
+                            Text("模式切换"),
+                          ],
+                        ),
+                      ),
+                      PopupMenuItem(
+                        value: 2,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Remix.sort_asc),
+                            AppStyle.hGap12,
+                            Text("按序排列"),
+                          ],
+                        ),
+                      ),
+                      PopupMenuItem(
+                        value: 4,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Remix.heart_line),
+                            AppStyle.hGap12,
+                            Text("关注设置"),
+                          ],
+                        ),
+                      ),
+                    ];
+                  },
+                  onSelected: (value) {
+                    if (value == 4) {
+                      Get.toNamed(RoutePath.kSettingsFollow);
+                    } else if (value == 0) {
+                      controller.startSelection();
+                    } else if (value == 1) {
+                      controller.showFollowStyleDialog();
+                    } else if (value == 2) {
+                      controller.showSortDialog();
+                    }
+                  },
+                )),
         ],
         leading: Obx(
-          () => FollowService.instance.updating.value
-              ? const IconButton(
-                  onPressed: null,
-                  icon: SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                    ),
-                  ),
+          () => controller.selectionMode.value
+              ? IconButton(
+                  key: const ValueKey('follow-selection-close'),
+                  tooltip: '结束多选',
+                  onPressed: controller.endSelection,
+                  icon: const Icon(Icons.close),
                 )
-              : IconButton(
-                  onPressed: () {
-                    controller.refreshData();
-                  },
-                  icon: const Icon(Icons.refresh),
-                ),
+              : FollowService.instance.updating.value
+                  ? const IconButton(
+                      onPressed: null,
+                      icon: SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                        ),
+                      ),
+                    )
+                  : IconButton(
+                      key: const ValueKey('follow-refresh'),
+                      tooltip: '刷新关注',
+                      onPressed: () {
+                        controller.refreshData();
+                      },
+                      icon: const Icon(Icons.refresh),
+                    ),
         ),
       ),
       body: Column(
@@ -129,6 +162,7 @@ class FollowUserPage extends GetView<FollowUserController> {
                         children: controller.tagList.map(
                           (option) {
                             return FilterButton(
+                              key: ValueKey('follow-filter-${option.tag}'),
                               text: option.tag,
                               selected: controller.filterMode.value == option,
                               onTap: () {
@@ -156,19 +190,24 @@ class FollowUserPage extends GetView<FollowUserController> {
                       itemBuilder: (_, i) {
                         var item = controller.list[i];
                         var site = Sites.allSites[item.siteId]!;
-                        return FollowUserItem(
-                          item: item,
-                          onRemove: () {
-                            controller.removeFollow(item);
-                          },
-                          onTap: () {
-                            AppNavigator.toLiveRoomDetail(site: site, roomId: item.roomId);
-                          },
-                          onLongPress: () {
-                            // 长按弹出操作：设置标签或查看详情
-                            controller.showBottomMenu(item);
-                          },
-                        );
+                        return Obx(() => FollowUserItem(
+                              key: ValueKey('follow-row-${item.id}'),
+                              item: item,
+                              selectionMode: controller.selectionMode.value,
+                              selected: controller.selectedIds.contains(item.id),
+                              onSelected: () => controller.toggleSelection(item),
+                              onRemove: AppSettingsController.instance.hideRemoveFollowButton.value
+                                  ? null
+                                  : () => controller.removeFollow(item),
+                              onTap: () {
+                                if (controller.selectionMode.value) {
+                                  controller.toggleSelection(item);
+                                } else {
+                                  AppNavigator.toLiveRoomDetail(site: site, roomId: item.roomId);
+                                }
+                              },
+                              onLongPress: () => controller.showBottomMenu(item),
+                            ));
                       },
                     )
                   : KeepAliveWrapper(
@@ -194,14 +233,42 @@ class FollowUserPage extends GetView<FollowUserController> {
                                 online: item.online.value,
                               );
                               var site = Sites.allSites[item.siteId]!;
-                              return LiveRoomCard(
-                                site,
-                                liveRoomItem,
-                                onFollowRemove: hide ? null : () => controller.removeFollow(item),
-                                onLongPress: () {
-                                  controller.showBottomMenu(item);
-                                },
-                              );
+                              return Obx(() {
+                                final selecting = controller.selectionMode.value;
+                                return GestureDetector(
+                                  key: ValueKey('follow-row-${item.id}'),
+                                  onTap: selecting ? () => controller.toggleSelection(item) : null,
+                                  child: Stack(
+                                    children: [
+                                      AbsorbPointer(
+                                        absorbing: selecting,
+                                        child: LiveRoomCard(
+                                          site,
+                                          liveRoomItem,
+                                          onFollowRemove:
+                                              hide || selecting ? null : () => controller.removeFollow(item),
+                                          onLongPress: () => controller.showBottomMenu(item),
+                                        ),
+                                      ),
+                                      if (selecting)
+                                        Positioned(
+                                          top: 4,
+                                          left: 4,
+                                          child: Material(
+                                            color: Theme.of(context).colorScheme.surface,
+                                            shape: const CircleBorder(),
+                                            child: Checkbox(
+                                              key: ValueKey('follow-select-${item.id}'),
+                                              value: controller.selectedIds.contains(item.id),
+                                              semanticLabel: '选择${item.userName}',
+                                              onChanged: (_) => controller.toggleSelection(item),
+                                            ),
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                );
+                              });
                             },
                           );
                         },

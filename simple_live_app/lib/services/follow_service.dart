@@ -25,6 +25,7 @@ import 'package:simple_live_app/models/db/follow_user.dart';
 import 'package:simple_live_app/models/db/follow_user_tag.dart';
 import 'package:simple_live_app/models/db/history.dart';
 import 'package:simple_live_app/services/db_service.dart';
+import 'package:simple_live_app/services/follow_sync.dart';
 import 'package:simple_live_core/simple_live_core.dart';
 import 'package:synchronized/synchronized.dart';
 
@@ -56,7 +57,9 @@ class FollowService extends GetxService {
   RxList<FollowUser> curTagFollowList = RxList<FollowUser>();
 
   /// 线程安全
-  final _lock = Lock();
+  final _lock = Lock(reentrant: true);
+
+  Future<T> withFollowWrite<T>(Future<T> Function() action) => _lock.synchronized(action);
 
   /// 已经更新状态的数量
   var updatedCount = 0;
@@ -66,14 +69,22 @@ class FollowService extends GetxService {
 
   Timer? updateTimer;
 
-  int _totalToUpdate = 0;
-
   int _refreshCycle = 0;
 
+  bool _closed = false;
+  int _totalToUpdate = 0;
   bool _snap = false;
 
+  Future<void>? _initialization;
+  Future<void> get ready => _initialization ??= _initialize();
+
   @override
-  Future<void> onInit() async {
+  Future<void> onInit() {
+    super.onInit();
+    return ready;
+  }
+
+  Future<void> _initialize() async {
     subscription = EventBus.instance.listen(Constant.kUpdateFollow, (data) {
       if (data is History) {
         updateFollowHistory(data);
@@ -82,225 +93,214 @@ class FollowService extends GetxService {
       }
     });
     await initFollowList();
+    if (_closed) return;
     initTimer();
     cleanupTombstones();
-    super.onInit();
   }
 
-  Future<void> updateTagName(FollowUserTag followUserTag, String newTagName) async {
-    final FollowUserTag newTag = followUserTag.copyWith(tag: newTagName);
-    updateFollowUserTag(newTag);
-    // update item's tag when update tagName
-    for (var i in newTag.userId) {
-      var follow = DBService.instance.followBox.get(i);
-      if (follow != null) {
-        follow.tag = newTagName;
-        await addFollow(follow);
-      }
-    }
-  }
+  Future<void> updateTagName(FollowUserTag followUserTag, String newTagName) => withFollowWrite(() async {
+        final current = followTagList.firstWhereOrNull((tag) => tag.id == followUserTag.id);
+        if (current == null) return;
+        final names = FollowUser.normalizeTags([newTagName]);
+        if (names.isEmpty || {'直播中', '未开播'}.contains(names.single) || names.single == current.tag) return;
+        final name = names.single;
+        if (followTagList.any((tag) => tag.tag == name && tag.id != current.id)) {
+          SmartDialog.showToast('标签名重复');
+          return;
+        }
+        var changedAt = _tagMetadataClock([current.tag, name]);
+        for (final follow in followList.where((follow) => follow.tags.contains(current.tag)).toList()) {
+          follow.replaceTags(follow.tags.map((tag) => tag == current.tag ? name : tag));
+          follow.markMetadataChanged(after: changedAt);
+          if (follow.metadataUpdatedAt > changedAt) changedAt = follow.metadataUpdatedAt;
+          await DBService.instance.addFollow(follow);
+        }
+        final previousName = current.copyWith(
+          id: DBService.instance.unusedFollowTagId(),
+          deleted: true,
+          userId: [],
+        )..markChanged(after: changedAt);
+        final renamed = current.copyWith(tag: name, updatedAt: previousName.updatedAt);
+        // Keep the live ID stable for selected filters/queues; retain the old name
+        // separately so stale sync peers cannot recreate it as an empty tag.
+        await DBService.instance.updateFollowTag(previousName);
+        await updateFollowUserTag(renamed);
+        await _rebuildTagIndex();
+        filterData();
+      });
 
   Future<void> updateFollowUserTag(FollowUserTag tag) async {
-    if (tag.tag == '全部') {
-      return;
-    }
+    if (tag.tag == '全部') return;
     await DBService.instance.updateFollowTag(tag);
-    // 查找并修改
-    var index = followTagList.indexWhere((oTag) => oTag.id == tag.id);
-    followTagList[index] = tag;
-  }
-
-  Future<void> addFollowUserTag(String tag) async {
-    // 判断待添加tag是否已存在，存在则return
-    if (followTagList.any((item) => item.tag == tag)) {
-      SmartDialog.showToast("标签名重复，修改失败");
-      return;
+    final index = followTagList.indexWhere((oldTag) => oldTag.id == tag.id);
+    if (index < 0) {
+      followTagList.add(tag);
+    } else {
+      followTagList[index] = tag;
     }
-    FollowUserTag item = await DBService.instance.addFollowTag(tag);
-    followTagList.add(item);
   }
 
-  Future removeFollowUserTag(FollowUserTag tag) async {
-    // 将tag下的所有follow设置为全部
-    for (var i in tag.userId) {
-      var follow = DBService.instance.followBox.get(i);
-      if (follow != null) {
-        follow.tag = "全部";
-        await FollowService.instance.addFollow(follow);
-      }
-    }
-    followTagList.remove(tag);
-    await DBService.instance.deleteFollowTag(tag.id);
-  }
+  Future<void> addFollowUserTag(String tag) => _lock.synchronized(() async {
+        final names = FollowUser.normalizeTags([tag]);
+        if (names.isEmpty || {'直播中', '未开播'}.contains(names.single)) return;
+        if (followTagList.any((item) => item.tag == names.single)) {
+          SmartDialog.showToast('标签名重复');
+          return;
+        }
+        followTagList.add(await DBService.instance.addFollowTag(names.single));
+        filterData();
+      });
 
-  // 获取用户自定义标签列表
+  Future<void> removeFollowUserTag(FollowUserTag tag) => withFollowWrite(() async {
+        final current = followTagList.firstWhereOrNull((item) => item.id == tag.id);
+        if (current == null) return;
+        var changedAt = current.updatedAt;
+        for (final follow in followList.where((follow) => follow.tags.contains(current.tag)).toList()) {
+          follow.replaceTags(follow.tags.where((name) => name != current.tag));
+          follow.markMetadataChanged();
+          if (follow.metadataUpdatedAt > changedAt) changedAt = follow.metadataUpdatedAt;
+          await DBService.instance.addFollow(follow);
+        }
+        await DBService.instance.deleteFollowTag(current.id, after: changedAt);
+        getAllTagList();
+        filterData();
+      });
+
   void getAllTagList() {
-    var list = DBService.instance.getFollowTagList();
-    followTagList.assignAll(list);
+    followTagList.assignAll(DBService.instance.getFollowTagList());
   }
 
-  /// 获取包含“全部”的标签选项列表
-  List<FollowUserTag> getTagOptionsWithAll() {
-    return [
-      FollowUserTag(id: '0', tag: '全部', userId: []),
-      ...followTagList,
-    ];
-  }
+  List<FollowUserTag> getTagOptionsWithAll() => [
+        FollowUserTag(id: '0', tag: '全部', userId: []),
+        ...followTagList,
+      ];
 
-  /// 为关注项设置标签（统一逻辑）
-  Future<void> setFollowTag(FollowUser item, FollowUserTag targetTag) async {
-    // 当前标签对象（可能为“全部”且不在 followTagList 中）
-    FollowUserTag? currentTag;
-    if (item.tag != '全部') {
-      for (final t in followTagList) {
-        if (t.tag == item.tag) {
-          currentTag = t;
-          break;
+  /// Compatibility API for callers that deliberately replace all memberships.
+  Future<void> setFollowTag(FollowUser item, FollowUserTag targetTag) => setFollowTags(item, [targetTag.tag]);
+
+  Future<void> setFollowTags(FollowUser item, Iterable<String> tags) => _lock.synchronized(() async {
+        final current = followList.firstWhereOrNull((follow) => follow.id == item.id);
+        if (current == null || current.deleted) return;
+        final next = FollowUser.normalizeTags(tags);
+        if (const ListEquality<String>().equals(current.tags, next)) return;
+        await _ensureActiveTags(next.where((name) => !current.tags.contains(name)));
+        current.replaceTags(next);
+        current.markMetadataChanged(after: _tagMetadataClock(next));
+        await DBService.instance.addFollow(current);
+        await _rebuildTagIndex();
+        filterData();
+      });
+
+  Future<void> batchUpdateTags(
+    Iterable<String> ids, {
+    Iterable<String> addTags = const [],
+    Iterable<String> removeTags = const [],
+  }) =>
+      _lock.synchronized(() async {
+        final selected = ids.toSet();
+        final additions = FollowUser.normalizeTags(addTags);
+        final removals = FollowUser.normalizeTags(removeTags).toSet();
+        final items = followList.where((item) => selected.contains(item.id)).toList();
+        if (items.isEmpty) return;
+        await _ensureActiveTags(additions.where((name) => !removals.contains(name)));
+        for (final item in items) {
+          final next = FollowUser.normalizeTags([...item.tags, ...additions].where((tag) => !removals.contains(tag)));
+          if (const ListEquality<String>().equals(item.tags, next)) continue;
+          item.replaceTags(next);
+          item.markMetadataChanged(after: _tagMetadataClock(next));
+          await DBService.instance.addFollow(item);
         }
-      }
-    }
+        await _rebuildTagIndex();
+        filterData();
+      });
 
-    // 从旧标签移除
-    if (currentTag != null) {
-      currentTag.userId.remove(item.id);
-      DBService.instance.updateFollowTag(currentTag);
-    }
-
-    // 添加到新标签（跳过“全部”）
-    if (targetTag.tag != '全部') {
-      // targetTag来源于UI选项，需定位真实对象
-      FollowUserTag? tar;
-      for (final t in followTagList) {
-        if (t.tag == targetTag.tag) {
-          tar = t;
-          break;
-        }
-      }
-      if (tar != null) {
-        tar.userId.addIf(!tar.userId.contains(item.id), item.id);
-        DBService.instance.updateFollowTag(tar);
-      }
-    }
-
-    // 更新FollowUser本身
-    item.tag = targetTag.tag;
-    await addFollow(item);
+  int _tagMetadataClock(Iterable<String> names) {
+    final selected = names.toSet();
+    return DBService.instance.getAllFollowTagList().where((tag) => selected.contains(tag.tag)).fold<int>(
+          0,
+          (time, tag) => tag.updatedAt > time ? tag.updatedAt : time,
+        );
   }
 
+  /// Only a deliberate tag edit can recreate a deleted definition. A pin/order
+  /// update or a legacy import carrying an old membership cannot do so.
+  Future<void> _ensureActiveTags(Iterable<String> names) async {
+    for (final name in FollowUser.normalizeTags(names)) {
+      await DBService.instance.addFollowTag(name);
+    }
+  }
+
+  /// Move relative to one neighbor in the saved manual order.
   void filterDataByTag(FollowUserTag tag) {
-    // 清空curTagFollowList
-    curTagFollowList.clear();
-    // 用一个新的列表来存储需要删除的 userId
-    List<String> toRemove = [];
-    for (var id in tag.userId) {
-      if (followList.any((x) => x.id == id)) {
-        // 找到对应的 followUser 添加到 curTagFollowList
-        curTagFollowList.add(followList.firstWhere((x) => x.id == id));
-      } else {
-        // 标记要删除的 id
-        toRemove.add(id);
-      }
-    }
-    // 在遍历结束后统一移除不在 followList 中的 id
-    tag.userId.removeWhere((id) => toRemove.contains(id));
-    // 更新数据库
-    if (toRemove.isNotEmpty) {
-      DBService.instance.updateFollowTag(tag);
-    }
+    curTagFollowList.assignAll(followList.where((follow) => tag.tag == '全部' || follow.tags.contains(tag.tag)));
     listSortByMethod(curTagFollowList, AppSettingsController.instance.followSortMethod.value);
   }
 
-  void updateFollowTagOrder(FollowUserTag oldTag, FollowUserTag newTag) {
-    // 改变先落库再读库最后更新ui，这中间需要同步等待，数据流程糟糕，开发心智负担重
-    // 内存优先：实现外表操作结束后异步落库，多写代码 但逻辑较为简单
-    followTagList.removeWhere((x) => x.id == oldTag.id);
-    followTagList.add(newTag);
-    // hive 以 id排序，额外进行排序操作
-    followTagList.sort((tagA, tagB) => tagA.id.compareTo(tagB.id));
+  Future<void> updateFollowTagOrder(FollowUserTag oldTag, FollowUserTag newTag) => withFollowWrite(() async {
+        final current = followTagList.firstWhereOrNull((tag) => tag.id == oldTag.id);
+        if (current == null || current.id == newTag.id) return;
+        final newId = DBService.instance.unusedFollowTagId(preferred: newTag.id);
+        await DBService.instance.deleteFollowTag(oldTag.id);
+        final tombstone = DBService.instance.tagBox.get(oldTag.id)!;
+        final replacement = current.copyWith(id: newId, userId: List<String>.of(current.userId))
+          ..markChanged(after: tombstone.updatedAt);
+        await DBService.instance.updateFollowTag(replacement);
+        final tags = [
+          for (final tag in followTagList)
+            if (tag.id == oldTag.id) replacement else tag,
+        ]..sort((a, b) => a.id.compareTo(b.id));
+        followTagList.assignAll(tags);
+        filterData();
+      });
 
-    DBService.instance.deleteFollowTag(oldTag.id);
-    DBService.instance.updateFollowTag(newTag);
-  }
+  // Explicit follow action also restores a previously deleted entry.
+  Future<void> addFollow(FollowUser follow) => _lock.synchronized(() async {
+        follow.romanName = PinyinHelper.getShortPinyin(
+          (follow.remark?.isNotEmpty ?? false) ? follow.remark! : follow.userName,
+        ).normalize();
+        follow.replaceTags(follow.tags);
+        follow.deleted = false;
+        follow.updateTime = 0;
+        final index = followList.indexWhere((item) => item.id == follow.id);
+        if (index >= 0) {
+          if (!identical(followList[index], follow)) follow.applySnapshot(followList[index].toSnapshot());
+          followList[index] = follow;
+        } else {
+          await _ensureActiveTags(follow.tags);
+          followList.add(follow);
+        }
+        await DBService.instance.addFollow(follow);
+        await _rebuildTagIndex();
+        filterData();
+      });
 
-  // 添加关注
-  Future<void> addFollow(FollowUser follow) async {
-    // follow变动过程中romanName统一变化
-    String romanName = "";
-    if (follow.remark != null && follow.remark!.isNotEmpty) {
-      romanName = PinyinHelper.getShortPinyin(follow.romanName!);
-    } else {
-      romanName = PinyinHelper.getShortPinyin(follow.userName);
-    }
-    follow.romanName = romanName.normalize();
-    // 重新关注时清除墓碑标记
-    follow.deleted = false;
-    follow.updateTime = 0;
-
-    // 更新标签归属
-    if (follow.tag != '全部') {
-      FollowUserTag? tagObj = followTagList.firstWhereOrNull((t) => t.tag == follow.tag);
-      if (tagObj != null) {
-        // 自刷新和迁移逻辑一致：删旧增新
-        tagObj.userId.remove(follow.id);
-        tagObj.userId.add(follow.id);
-        await updateFollowUserTag(tagObj);
-      }
-    }
-
-    // live_room_controller.add 已同步history
-    // db.add 其实是update会直接更新数据，所以外表也应该实现此功能：有则更，无则添加
-    int index = followList.indexWhere((f) => f.id == follow.id);
-    if (index != -1) {
-      followList[index] = follow;
-    } else {
-      followList.add(follow);
-    }
-    liveListSort(); // 每次数据操作后外表进行业务刷新
-    await DBService.instance.addFollow(follow);
-  }
-
-  // 取消关注（墓碑机制）
-  Future<void> removeFollowUser(String id) async {
-    // 存储在线状态，数据修改应followList外表和followBox内表保持同步
-    // 后续业务逻辑中，将规避直接业务在数据库上操作，落库操作只执行一次
-    // 从而规避业务逻辑直读数据库导致的数据混乱
-    FollowUser follow = followList.firstWhere((x) => x.id == id);
-    followList.removeWhere((x) => x.id == id);
-    // 取消关注同时删除用户自定义tag中的关注id
-    if (follow.tag != "全部") {
-      // 对象引用会直接修改数据无需额外操作
-      var tag = followTagList.firstWhereOrNull((tag) => tag.tag == follow.tag);
-      if (tag != null) {
-        tag.userId.remove(follow.id);
-        await FollowService.instance.updateFollowUserTag(tag);
-      }
-    }
-    liveListSort();
-    // 设置墓碑标记，而非直接删除记录
-    follow.deleted = true;
-    follow.updateTime = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-    await DBService.instance.addFollow(follow);
-  }
+  Future<void> removeFollowUser(String id) => _lock.synchronized(() async {
+        final follow = followList.firstWhereOrNull((item) => item.id == id);
+        if (follow == null) return;
+        follow.deleted = true;
+        follow.updateTime = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+        followList.removeWhere((item) => item.id == id);
+        dormantFollowList.removeWhere((item) => item.id == id);
+        await DBService.instance.addFollow(follow);
+        await _rebuildTagIndex();
+        filterData();
+      });
 
   // 判断关注是否存在
   bool getFollowExist(String id) {
     return DBService.instance.getFollowExist(id);
   }
 
-  // 更新关注的历史记录
-  Future<void> updateFollowHistory(History history) async {
-    var follow = followList.where((follow) => follow.id == history.id).firstOrNull;
-    if (follow == null) {
-      return;
-    } else {
-      // sync watch-part between history and follow
-      follow.syncDuration = history.syncDuration;
-      follow.watchDuration = history.watchDuration;
-      follow.watchDurationSec = history.watchDuration!.toDuration().inSeconds;
-      await addFollow(follow);
-    }
-    Log.i("已更新当前播放的观看时长：${follow.watchDurationSec}");
-  }
+  // History changes cannot restore a follow deleted while waiting for a write.
+  Future<void> updateFollowHistory(History history) => withFollowWrite(() async {
+        final follow = followList.firstWhereOrNull((follow) => follow.id == history.id && !follow.deleted);
+        if (follow == null) return;
+        follow.syncDuration = history.syncDuration;
+        follow.watchDuration = history.watchDuration;
+        follow.watchDurationSec = (history.watchDuration ?? '00:00:00').toDuration().inSeconds;
+        await DBService.instance.addFollow(follow);
+        filterData();
+      });
 
   void initTimer() {
     if (AppSettingsController.instance.autoUpdateFollowEnable.value) {
@@ -320,40 +320,49 @@ class FollowService extends GetxService {
   }
 
   // 此操作只在初始化时调用一次
-  Future<void> initFollowList() async {
-    List<FollowUser> list = DBService.instance.getFollowList();
-
-    if (list.isEmpty) {
-      updating.value = false;
-      followList.assignAll(list);
-      liveList.clear();
-      notLiveList.clear();
-      _updatedListController.add(0);
-      return;
-    }
-    var followSnapshot = AppSettingsController.instance.followSnapshot;
-    bool followSnapshotEnable = AppSettingsController.instance.followSnapshotEnable.value;
-    // whether to recover snapshot depends on expireAt
-    if (followSnapshot != null &&
-        followSnapshot.expireAt > DateTime.now().microsecondsSinceEpoch &&
-        followSnapshotEnable) {
-      final snapshotMap = {for (var item in followSnapshot.followSnapshotItems) item.id: item};
-      for (var item in list) {
-        final resItem = snapshotMap[item.id];
-        if (resItem != null) {
-          item.applySnapshot(resItem);
+  Future<void> initFollowList() => withFollowWrite(() async {
+        List<FollowUser> list = DBService.instance.getFollowList();
+        // Very old releases stored membership only in the tag index. Recover it
+        // before rebuilding that index, even when startup migration runs later.
+        if (AppSettingsController.instance.dbVer <= 10709) {
+          final legacyTags = DBService.instance.getFollowTagList();
+          for (final follow in list) {
+            final memberships = legacyTags.where((tag) => tag.userId.contains(follow.id)).map((tag) => tag.tag);
+            follow.replaceTags([...follow.tags, ...memberships]);
+            await DBService.instance.addFollow(follow);
+          }
         }
-      }
-      _snap = true;
-      Log.i("FollowService: follow-snapshot has recovered, expireAt: ${followSnapshot.expireAt}");
-    }
-    followList.assignAll(list);
-    if (_snap) {
-      liveListSort();
-    }
-    _buildDormantList();
-    getAllTagList();
-  }
+        getAllTagList();
+
+        if (list.isEmpty) {
+          updating.value = false;
+          followList.assignAll(list);
+          liveList.clear();
+          notLiveList.clear();
+          if (!_closed) _updatedListController.add(0);
+          return;
+        }
+        var followSnapshot = AppSettingsController.instance.followSnapshot;
+        bool followSnapshotEnable = AppSettingsController.instance.followSnapshotEnable.value;
+        // whether to recover snapshot depends on expireAt
+        if (followSnapshot != null &&
+            followSnapshot.expireAt > DateTime.now().microsecondsSinceEpoch &&
+            followSnapshotEnable) {
+          final snapshotMap = {for (var item in followSnapshot.followSnapshotItems) item.id: item};
+          for (var item in list) {
+            final resItem = snapshotMap[item.id];
+            if (resItem != null) {
+              item.applySnapshot(resItem);
+            }
+          }
+          _snap = true;
+          Log.i("FollowService: follow-snapshot has recovered, expireAt: ${followSnapshot.expireAt}");
+        }
+        followList.assignAll(list);
+        await _rebuildTagIndex();
+        _buildDormantList();
+        filterData();
+      });
 
   /// 构建休眠用户列表
   void _buildDormantList() {
@@ -364,21 +373,18 @@ class FollowService extends GetxService {
     }
     final cutoff = DateTime.now().subtract(Duration(days: threshold)).millisecondsSinceEpoch ~/ 1000;
     dormantFollowList.assignAll(
-      followList.where((u) => u.lastWatchTime! > 0 && u.lastWatchTime! < cutoff),
+      followList.where((u) => (u.lastWatchTime ?? 0) > 0 && u.lastWatchTime! < cutoff),
     );
   }
 
   /// 解冻：用户进入直播间时调用
-  void resumeUser(String userId) {
-    // 更新 lastWatchTime 如果已关注
-    var follow = followList.firstWhereOrNull((u) => u.id == userId);
-    if (follow != null) {
-      follow.lastWatchTime = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-      DBService.instance.addFollow(follow);
-      // 从休眠列表移除
-      dormantFollowList.removeWhere((u) => u.id == userId);
-    }
-  }
+  Future<void> resumeUser(String userId) => withFollowWrite(() async {
+        final follow = followList.firstWhereOrNull((follow) => follow.id == userId && !follow.deleted);
+        if (follow == null) return;
+        follow.lastWatchTime = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+        await DBService.instance.addFollow(follow);
+        dormantFollowList.removeWhere((item) => item.id == userId);
+      });
 
   Future<void> loadData({bool updateStatus = true, int? cycle}) async {
     // snapshot 恢复跳过第一次状态更新
@@ -531,7 +537,7 @@ class FollowService extends GetxService {
 
   void filterData() {
     liveListSort();
-    _updatedListController.add(0);
+    if (!_closed) _updatedListController.add(0);
   }
 
   void liveListSort() {
@@ -568,27 +574,26 @@ class FollowService extends GetxService {
       valueGetter: (item) => item.romanName ?? "",
       ascending: false,
     );
-    var tagCondition = SortCondition<FollowUser>(
+    final tagCondition = SortCondition<FollowUser>(
       valueGetter: (item) {
-        return followTagList.indexWhere((followTag) {
-          return followTag.tag == item.tag;
-        });
+        final index = followTagList.indexWhere((tag) => item.tags.contains(tag.tag));
+        return index < 0 ? followTagList.length : index;
       },
     );
-    switch (sortMethod) {
-      case SortMethod.watchDuration:
-        list.dynamicSort([liveCondition, watchDurationCondition]);
-      case SortMethod.siteId:
-        list.dynamicSort([liveCondition, siteIdCondition, watchDurationCondition]);
-      case SortMethod.recently:
-        list.dynamicSort([liveCondition, recentlyCondition]);
-      case SortMethod.userNameASC:
-        list.dynamicSort([liveCondition, userNameASCCondition]);
-      case SortMethod.userNameDESC:
-        list.dynamicSort([liveCondition, userNameDESCCondition]);
-      case SortMethod.tag:
-        list.dynamicSort([liveCondition, tagCondition, watchDurationCondition]);
-    }
+    final stableCondition = SortCondition<FollowUser>(valueGetter: (item) => item.id);
+    final methodConditions = switch (sortMethod) {
+      SortMethod.watchDuration => [watchDurationCondition],
+      SortMethod.siteId => [siteIdCondition, watchDurationCondition],
+      SortMethod.recently => [recentlyCondition],
+      SortMethod.userNameASC => [userNameASCCondition],
+      SortMethod.userNameDESC => [userNameDESCCondition],
+      SortMethod.tag => [tagCondition, watchDurationCondition],
+    };
+    list.dynamicSort([
+      liveCondition,
+      ...methodConditions,
+      stableCondition,
+    ]);
   }
 
   void exportFile() async {
@@ -738,91 +743,109 @@ class FollowService extends GetxService {
   }
 
   String generateJson() {
-    var data = followList
-        .map(
-          (item) => {
-            "siteId": item.siteId,
-            "id": item.id,
-            "roomId": item.roomId,
-            "userName": item.userName,
-            "face": item.face,
-            "watchDuration": item.watchDuration,
-            "watchDurationSec": item.watchDurationSec,
-            "addTime": item.addTime.toString(),
-            "remark": item.remark,
-            "romanName": item.romanName,
-            "tag": item.tag
-          },
-        )
-        .toList();
-    return jsonEncode(data);
+    final records = followList.map((item) => item.toJson()).toList();
+    if (records.isNotEmpty) {
+      records.first['tagDefinitions'] = DBService.instance.getAllFollowTagList().map((tag) => tag.toJson()).toList();
+    }
+    return jsonEncode(records);
   }
 
-  Future inputJson(String content) async {
-    var data = jsonDecode(content);
-
-    for (var item in data) {
-      var follow = FollowUser.fromJson(item);
-      await DBService.instance.addFollow(follow);
-    }
-
-    await followUserAllDataCheck();
+  Future<void> inputJson(String content) async {
+    await importSyncedFollows(jsonDecode(content));
   }
 
-  // 数据校对
-  // 核心关注数据有几种错乱情况，需要进行校对，需要一定时间复核代码
-  // 1：未关注，但标签包含关注
-  // 2: 已关注，且设置标签，但标签不包含
-  // 3: 已关注，且设置标签，但标签不存在
-  // 4: 标签重复
-  // 5: webdav同步导致的数据错乱
-  // 校对思路，followList是基础数据源，tagList为索引数据，重建数据即可
-  // 根据此思路，可以重写文件导入导出以及webdav恢复逻辑
-  Future<void> followUserAllDataCheck() async {
-    var followUserListTemp = DBService.instance.getFollowList();
-    var historyListTemp = DBService.instance.getHistories();
-    var oldTagList = DBService.instance.getFollowTagList();
-    final Map<String, List<String>> tagMap = {
-      for (var tag in oldTagList) tag.tag: <String>[],
-    };
+  /// Repair legacy records and imported indexes, then publish one consistent list.
+  Future<void> followUserAllDataCheck() => withFollowWrite(() async {
+        final previous = {for (final follow in followList) follow.id: follow};
+        final follows = DBService.instance.getFollowList();
+        for (final follow in follows) {
+          follow.replaceTags(follow.tags);
+          follow.romanName = PinyinHelper.getShortPinyin(
+            (follow.remark?.isNotEmpty ?? false) ? follow.remark! : follow.userName,
+          ).normalize();
+          final old = previous[follow.id];
+          if (old != null && !identical(old, follow)) {
+            follow.applySnapshot(old.toSnapshot());
+          }
+        }
+        await DBService.instance.followBox.putAll({for (final follow in follows) follow.id: follow});
+        followList.assignAll(follows);
+        await _rebuildTagIndex();
+        _buildDormantList();
+        filterData();
+      });
 
-    for (FollowUser follow in followUserListTemp) {
-      // 手动添加罗马音
-      if (follow.remark != null && follow.remark!.isNotEmpty) {
-        var roman = PinyinHelper.getShortPinyin(follow.remark!).normalize();
-        follow.romanName = roman;
-      } else {
-        follow.romanName = PinyinHelper.getShortPinyin(follow.userName).normalize();
-      }
-      // 手动同步 watchDurationSec
-      var historyItem = historyListTemp.where((history) => follow.id == history.id).firstOrNull;
-      // 用户可能存在删除历史记录可能
-      if (historyItem != null) {
-        follow.watchDurationSec = historyItem.watchDuration!.toDuration().inSeconds;
-      }
-      await DBService.instance.addFollow(follow);
+  bool _validOrderKey(String key) {
+    if (key.isEmpty || !RegExp(r'^[A-Za-z][0-9A-Za-z]+$').hasMatch(key)) return false;
+    try {
+      FractionalIndexing.validateOrderKey(key, FractionalIndexing.base62Digits);
+      return true;
+    } catch (_) {
+      return false;
     }
-    Log.i("transfer follow.name to roman is down!");
-    for (var follow in followUserListTemp) {
-      if (follow.tag != "全部") {
-        tagMap.putIfAbsent(follow.tag, () => <String>[]).add(follow.id);
-      }
-    }
-    // 落库
-    final Map<String, FollowUserTag> res = {};
+  }
+
+  /// Follow records own membership. Definitions retain their versions and
+  /// tombstones so deleting/renaming an empty tag survives bidirectional sync.
+  Future<void> _rebuildTagIndex() async {
+    final existing = DBService.instance.getAllFollowTagList();
+    final latestByName = <String, FollowUserTag>{};
+    final records = <String, FollowUserTag>{};
     String? lastKey;
-    for (var entry in tagMap.entries) {
-      lastKey = FractionalIndexing.generateKeyBetween(lastKey, null);
-      final followUserTag = FollowUserTag(
-        id: lastKey,
-        tag: entry.key,
-        userId: entry.value,
-      );
-      res[followUserTag.id] = followUserTag;
+    for (final tag in existing) {
+      if (_validOrderKey(tag.id) && (lastKey == null || tag.id.compareTo(lastKey) > 0)) lastKey = tag.id;
     }
-    await DBService.instance.tagBox.clear();
-    await DBService.instance.tagBox.putAll(res);
-    Log.i("Follow-Service: data check down，follows:${followUserListTemp.length}，tags:${tagMap.length}");
+    for (final old in existing) {
+      final name = FollowUser.normalizeTags([old.tag]).firstOrNull;
+      if (name == null) continue;
+      var id = old.id;
+      if (!_validOrderKey(id) || records.containsKey(id)) {
+        id = FractionalIndexing.generateKeyBetween(lastKey, null);
+        lastKey = id;
+      }
+      final tag = old.copyWith(id: id, tag: name, userId: []);
+      records[id] = tag;
+      final previous = latestByName[name];
+      if (previous == null ||
+          tag.updatedAt > previous.updatedAt ||
+          (tag.updatedAt == previous.updatedAt && tag.deleted && !previous.deleted)) {
+        latestByName[name] = tag;
+      }
+    }
+    // Duplicate active definitions are index repairs, not user deletions. A
+    // synthetic equal-time tombstone here would incorrectly beat the winner.
+    records.removeWhere((id, tag) => !tag.deleted && !identical(latestByName[tag.tag], tag));
+    for (final follow in followList.toList()) {
+      final retained = <String>[];
+      var metadataTime = follow.metadataUpdatedAt;
+      for (final name in follow.tags) {
+        var tag = latestByName[name];
+        if (tag != null && tag.deleted) {
+          if (tag.updatedAt > metadataTime) metadataTime = tag.updatedAt;
+          continue;
+        }
+        if (tag == null) {
+          lastKey = FractionalIndexing.generateKeyBetween(lastKey, null);
+          tag = FollowUserTag(id: lastKey, tag: name, userId: [], updatedAt: follow.metadataUpdatedAt);
+          records[tag.id] = tag;
+          latestByName[name] = tag;
+        }
+        retained.add(name);
+        tag.userId.add(follow.id);
+      }
+      if (!const ListEquality<String>().equals(retained, follow.tags)) {
+        follow.replaceTags(retained);
+        follow.metadataUpdatedAt = metadataTime;
+        // The remote tag operation already has a clock. Preserve its authority
+        // instead of inventing a new local edit while repairing an import.
+        await DBService.instance.addFollow(follow);
+      }
+    }
+    await DBService.instance.tagBox.putAll(records);
+    await DBService.instance.tagBox.deleteAll(
+      DBService.instance.tagBox.keys.where((key) => !records.containsKey(key)).toList(),
+    );
+    getAllTagList();
   }
 
   /// 清理墓碑记录：删除 updateTime 超过15天的墓碑
@@ -838,8 +861,10 @@ class FollowService extends GetxService {
 
   @override
   void onClose() {
+    _closed = true;
     updateTimer?.cancel();
     subscription?.cancel();
+    _updatedListController.close();
     super.onClose();
   }
 }

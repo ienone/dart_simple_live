@@ -15,17 +15,33 @@ class FollowUserTag {
   @HiveField(3)
   List<String> userId;
 
+  @HiveField(4, defaultValue: false)
+  bool deleted;
+
+  @HiveField(5, defaultValue: 0)
+  int updatedAt;
+
   FollowUserTag({
     required this.id,
     required this.tag,
     required this.userId,
+    this.deleted = false,
+    this.updatedAt = 0,
   });
+
+  void markChanged({int after = 0}) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final previous = updatedAt > after ? updatedAt : after;
+    updatedAt = now > previous ? now : previous + 1;
+  }
 
   factory FollowUserTag.fromJson(Map<String, dynamic> json) {
     return FollowUserTag(
       id: json['id'],
       tag: json['tag'],
       userId: List<String>.from(json['userId']),
+      deleted: json['deleted'] as bool? ?? false,
+      updatedAt: json['updatedAt'] as int? ?? 0,
     );
   }
 
@@ -34,6 +50,8 @@ class FollowUserTag {
       'id': id,
       'tag': tag,
       'userId': userId,
+      'deleted': deleted,
+      'updatedAt': updatedAt,
     };
   }
 
@@ -41,11 +59,15 @@ class FollowUserTag {
     String? id,
     String? tag,
     List<String>? userId,
+    bool? deleted,
+    int? updatedAt,
   }) {
     return FollowUserTag(
       id: id ?? this.id,
       tag: tag ?? this.tag,
       userId: userId ?? this.userId,
+      deleted: deleted ?? this.deleted,
+      updatedAt: updatedAt ?? this.updatedAt,
     );
   }
 }

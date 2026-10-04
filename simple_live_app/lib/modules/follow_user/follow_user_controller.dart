@@ -12,6 +12,7 @@ import 'package:simple_live_app/app/event_bus.dart';
 import 'package:simple_live_app/app/utils.dart';
 import 'package:simple_live_app/models/db/follow_user.dart';
 import 'package:simple_live_app/models/db/follow_user_tag.dart';
+import 'package:simple_live_app/modules/follow_user/follow_tag_picker.dart';
 import 'package:simple_live_app/routes/app_navigation.dart';
 import 'package:simple_live_app/services/follow_service.dart';
 
@@ -42,6 +43,9 @@ class FollowUserController extends BasePageController<FollowUser> {
     SortMethod.userNameDESC: "用户名Z-A",
     SortMethod.tag: "自定义标签",
   };
+
+  final selectionMode = false.obs;
+  final selectedIds = <String>{}.obs;
 
   // 关注列表样式
   var followStyleMap = {true: "紧凑模式", false: "卡片模式"};
@@ -79,11 +83,11 @@ class FollowUserController extends BasePageController<FollowUser> {
     if (page > 1) {
       return Future.value([]);
     }
-    if (filterMode.value.tag == "全部") {
+    if (filterMode.value.id == "0") {
       return FollowService.instance.followList.value;
-    } else if (filterMode.value.tag == "直播中") {
+    } else if (filterMode.value.id == "1") {
       return FollowService.instance.liveList.value;
-    } else if (filterMode.value.tag == "未开播") {
+    } else if (filterMode.value.id == "2") {
       return FollowService.instance.notLiveList.value;
     } else {
       FollowService.instance.filterDataByTag(filterMode.value);
@@ -99,26 +103,31 @@ class FollowUserController extends BasePageController<FollowUser> {
         tagList.add(i);
       }
     }
+    filterMode.value = tagList.firstWhereOrNull((tag) => tag.id == filterMode.value.id) ??
+        tagList.firstWhereOrNull((tag) => tag.tag == filterMode.value.tag) ??
+        tagList.first;
   }
 
   // 数据清洗：不关心中间 data_flow，最终由filterData决定显示数据
   void filterData() {
     bool hideOffline = AppSettingsController.instance.hideOfflineFollow.value;
 
-    if (filterMode.value.tag == "全部") {
+    if (filterMode.value.id == "0") {
       list.assignAll(FollowService.instance.followList.value);
-    } else if (filterMode.value.tag == "直播中") {
+    } else if (filterMode.value.id == "1") {
       list.assignAll(FollowService.instance.liveList.value);
-    } else if (filterMode.value.tag == "未开播") {
+    } else if (filterMode.value.id == "2") {
       list.assignAll(FollowService.instance.notLiveList.value);
     } else {
       FollowService.instance.filterDataByTag(filterMode.value);
       list.assignAll(FollowService.instance.curTagFollowList);
     }
 
-    if (hideOffline && filterMode.value.tag != "未开播") {
+    if (hideOffline && filterMode.value.id != "2") {
       list.retainWhere((user) => user.liveStatus.value == 2);
     }
+    pageEmpty.value = list.isEmpty;
+    selectedIds.retainAll(FollowService.instance.followList.map((follow) => follow.id));
   }
 
   // 用户自定义关注样式
@@ -139,9 +148,7 @@ class FollowUserController extends BasePageController<FollowUser> {
     if (res != null) {
       sortMethod.value = res;
       AppSettingsController.instance.setFollowSortMethod(sortMethod.value);
-      if (filterMode.value.tag == "未开播" || filterMode.value.tag == "全部" || filterMode.value.tag == "直播中") {
-        FollowService.instance.liveListSort();
-      }
+      FollowService.instance.liveListSort();
       filterData();
     }
   }
@@ -156,14 +163,6 @@ class FollowUserController extends BasePageController<FollowUser> {
     if (!result) {
       return;
     }
-    // 取消关注同时删除标签内的 userId
-    if (follow.tag != "全部") {
-      var tag = tagList.firstWhereOrNull((tag) => tag.tag == follow.tag);
-      if (tag != null) {
-        tag.userId.remove(follow.id);
-        updateTag(tag);
-      }
-    }
     await FollowService.instance.removeFollowUser(follow.id);
     filterData();
   }
@@ -172,27 +171,71 @@ class FollowUserController extends BasePageController<FollowUser> {
     await FollowService.instance.addFollow(follow);
   }
 
-  void setFollowTag(FollowUser follow, FollowUserTag targetTag) {
-    FollowService.instance.setFollowTag(follow, targetTag);
+  void startSelection([FollowUser? follow]) {
+    selectedIds.clear();
+    if (follow != null) selectedIds.add(follow.id);
+    selectionMode.value = true;
+  }
+
+  void endSelection() {
+    selectionMode.value = false;
+    selectedIds.clear();
+  }
+
+  void toggleSelection(FollowUser follow) {
+    if (!selectedIds.remove(follow.id)) selectedIds.add(follow.id);
+  }
+
+  void toggleSelectVisible() {
+    final ids = list.map((follow) => follow.id).toSet();
+    if (ids.every(selectedIds.contains)) {
+      selectedIds.removeAll(ids);
+    } else {
+      selectedIds.addAll(ids);
+    }
+  }
+
+  Future<void> batchTags({required bool remove}) async {
+    final ids = selectedIds.toList();
+    if (ids.isEmpty) return;
+    final tags = await showFollowTagPicker(title: remove ? '移除标签' : '添加标签', allowCreate: !remove);
+    if (tags == null || tags.isEmpty) return;
+    await FollowService.instance.batchUpdateTags(
+      ids,
+      addTags: remove ? const [] : tags,
+      removeTags: remove ? tags : const [],
+    );
     filterData();
   }
 
-  Future<void> updateTag(FollowUserTag followUserTag) async {
-    await FollowService.instance.updateFollowUserTag(followUserTag);
+  Future<void> setFollowTagDialog(FollowUser follow) async {
+    final tags = await showFollowTagPicker(selectedTags: follow.tags);
+    if (tags == null) return;
+    await FollowService.instance.setFollowTags(follow, tags);
+    filterData();
   }
 
-  // 弹出底部菜单栏
   void showBottomMenu(FollowUser item) {
     Get.bottomSheet(
       SafeArea(
         child: Wrap(
           children: [
             ListTile(
+              key: const ValueKey('follow-action-tags'),
               leading: const Icon(Remix.price_tag_3_line),
               title: const Text('设置标签'),
               onTap: () {
                 Get.back();
                 setFollowTagDialog(item);
+              },
+            ),
+            ListTile(
+              key: const ValueKey('follow-action-select'),
+              leading: const Icon(Icons.checklist),
+              title: const Text('多选'),
+              onTap: () {
+                Get.back();
+                startSelection(item);
               },
             ),
             ListTile(
@@ -207,93 +250,7 @@ class FollowUserController extends BasePageController<FollowUser> {
         ),
       ),
       backgroundColor: Get.theme.cardColor,
-    );
-  }
-
-  void setFollowTagDialog(FollowUser follow) {
-    /// 控制单选ui
-    List<FollowUserTag> copiedList = [
-      tagList.first,
-      ...tagList.skip(3),
-    ];
-    Rx<FollowUserTag> checkTag = tagList.indexOf(filterMode.value) < 3 ? copiedList.first.obs : filterMode.value.obs;
-    final ScrollController scrollController = ScrollController();
-    Get.dialog(
-      AlertDialog(
-        contentPadding: const EdgeInsets.all(16.0),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12.0),
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // 标题栏
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text(
-                  '设置标签',
-                  style: TextStyle(
-                    fontSize: 18,
-                  ),
-                ),
-                IconButton(
-                  icon: const Icon(
-                    Icons.check,
-                  ),
-                  onPressed: () {
-                    setFollowTag(follow, checkTag.value);
-                    Get.back();
-                  },
-                ),
-              ],
-            ),
-            const Divider(),
-            Obx(
-              () {
-                int selectedIndex = copiedList.indexOf(checkTag.value);
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  if (selectedIndex >= 0) {
-                    scrollController.animateTo(
-                      selectedIndex * 60.0, // 假设每项高度为 60
-                      duration: const Duration(milliseconds: 300),
-                      curve: Curves.easeInOut,
-                    );
-                  }
-                });
-                return SizedBox(
-                  height: 300,
-                  width: 300,
-                  child: RadioGroup<FollowUserTag>(
-                    groupValue: checkTag.value,
-                    onChanged: (value) {
-                      checkTag.value = value!;
-                    },
-                    child: ListView.builder(
-                      controller: scrollController,
-                      itemCount: copiedList.length,
-                      itemBuilder: (context, index) {
-                        var tagItem = copiedList[index];
-                        return Container(
-                          decoration: BoxDecoration(
-                            border: Border(
-                              bottom: BorderSide(color: Colors.grey.shade300, width: 1.0),
-                            ),
-                          ),
-                          child: RadioListTile<FollowUserTag>(
-                            title: Text(tagItem.tag),
-                            value: tagItem,
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-                );
-              },
-            ),
-          ],
-        ),
-      ),
+      isScrollControlled: true,
     );
   }
 

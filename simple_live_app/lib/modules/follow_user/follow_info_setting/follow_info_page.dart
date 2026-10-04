@@ -4,7 +4,6 @@ import 'package:remixicon/remixicon.dart';
 import 'package:simple_live_app/app/app_style.dart';
 import 'package:simple_live_app/app/sites.dart';
 import 'package:simple_live_app/modules/follow_user/follow_info_setting/follow_info_controller.dart';
-import 'package:simple_live_app/widgets/settings/settings_menu.dart';
 
 class FollowInfoPage extends GetView<FollowInfoController> {
   const FollowInfoPage({super.key});
@@ -95,25 +94,30 @@ class FollowInfoPage extends GetView<FollowInfoController> {
           // 标签设置：底部弹出选择
           Padding(
             padding: AppStyle.edgeInsetsA12,
-            child: Obx(() {
-              final items = controller.tagOptions;
-              final selected = controller.selectedTag.value;
-              final Map<String, String> valueMap = {
-                for (final t in items) t.tag: t.tag,
-              };
-              return SettingsMenu<String>(
-                title: '标签设置',
-                value: selected?.tag ?? '全部',
-                valueMap: valueMap,
-                onChanged: (value) {
-                  final target = items.firstWhere(
-                    (e) => e.tag == value,
-                    orElse: () => items.first,
-                  );
-                  controller.changeTag(target);
-                },
-              );
-            }),
+            child: Obx(() => ListTile(
+                  key: const ValueKey('follow-info-tags'),
+                  title: const Text('标签设置'),
+                  trailing: SizedBox(
+                    width: MediaQuery.sizeOf(context).width * .45,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        Flexible(
+                          child: Text(
+                            controller.followUser.value!.tags.isEmpty
+                                ? '无'
+                                : controller.followUser.value!.tags.join(' · '),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(color: Colors.grey),
+                          ),
+                        ),
+                        const Icon(Icons.chevron_right, color: Colors.grey),
+                      ],
+                    ),
+                  ),
+                  onTap: controller.editTags,
+                )),
           ),
           AppStyle.divider,
           Padding(
@@ -220,11 +224,6 @@ class FollowInfoPage extends GetView<FollowInfoController> {
                     ),
                   ],
                 ),
-                AppStyle.vGap12,
-                Text(
-                  "other todo ...",
-                  style: TextStyle(color: Colors.grey),
-                )
               ],
             ),
           ),

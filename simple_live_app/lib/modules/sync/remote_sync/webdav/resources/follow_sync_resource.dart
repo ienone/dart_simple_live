@@ -2,14 +2,12 @@ import 'dart:convert';
 
 import 'package:archive/archive.dart';
 import 'package:fractional_indexing_dart/fractional_indexing_dart.dart';
-import 'package:simple_live_app/app/constant.dart';
-import 'package:simple_live_app/app/event_bus.dart';
 import 'package:simple_live_app/app/utils/extensions/duration_2_str_utils.dart';
 import 'package:simple_live_app/models/db/follow_user.dart';
 import 'package:simple_live_app/models/db/follow_user_tag.dart';
+import 'package:simple_live_app/services/follow_sync.dart';
 import 'package:simple_live_app/modules/sync/remote_sync/webdav/interface/sync_resource.dart';
 import 'package:simple_live_app/services/db_service.dart';
-import 'package:simple_live_app/services/local_storage_service.dart';
 
 class FollowBundle {
   final List<FollowUser> follows;
@@ -31,8 +29,11 @@ class FollowSyncResource implements SyncResource<FollowBundle> {
   @override
   Future<FollowBundle> loadLocal() async {
     // 同步时加载所有记录（包含墓碑），确保墓碑可以传播到其他设备
-    var followList = DBService.instance.getAllFollowList();
-    var tagList = DBService.instance.getFollowTagList();
+    var followList = DBService.instance
+        .getAllFollowList()
+        .map((item) => FollowUser.fromJson(item.toJson(), existing: item))
+        .toList();
+    var tagList = DBService.instance.getAllFollowTagList();
     return FollowBundle(
       follows: followList,
       tags: tagList,
@@ -43,12 +44,21 @@ class FollowSyncResource implements SyncResource<FollowBundle> {
   FollowBundle? loadRemote(Archive archive) {
     final followFile = archive.findFile(fileName);
     final tagFile = archive.findFile(tagFileName);
-    if (followFile == null || tagFile == null) return null;
+    if (followFile == null) return null;
 
     final followJsonData = jsonDecode(utf8.decode(followFile.content));
-    var followRemoteList = (followJsonData['data'] as List).map((e) => FollowUser.fromJson(e)).toList();
-    final tagJsonData = jsonDecode(utf8.decode(tagFile.content));
-    var tagRemoteList = (tagJsonData['data'] as List).map((e) => FollowUserTag.fromJson(e)).toList();
+    final ids = <String>{};
+    var followRemoteList = (followJsonData['data'] as List).map((record) {
+      final json = Map<String, dynamic>.from(record as Map);
+      final follow = FollowUser.fromJson(json, existing: DBService.instance.followBox.get(json['id']));
+      if (follow.id.isEmpty || !ids.add(follow.id)) {
+        throw const FormatException('关注记录标识无效或重复');
+      }
+      return follow;
+    }).toList();
+    final tagRemoteList = tagFile == null
+        ? <FollowUserTag>[]
+        : parseSyncedTagDefinitions(jsonDecode(utf8.decode(tagFile.content))['data']);
     return FollowBundle(
       follows: followRemoteList,
       tags: tagRemoteList,
@@ -57,15 +67,11 @@ class FollowSyncResource implements SyncResource<FollowBundle> {
 
   @override
   Future<void> saveLocal(FollowBundle data) async {
-    await DBService.instance.followBox.clear();
-    for (final item in data.follows) {
-      await DBService.instance.followBox.put(item.id, item);
-    }
-    await DBService.instance.tagBox.clear();
-    for (final tag in data.tags) {
-      await DBService.instance.tagBox.put(tag.id, tag);
-    }
-    EventBus.instance.emit(Constant.kUpdateFollow, 0);
+    await importSyncedFollows(
+      data.follows.map((item) => item.toJson()).toList(),
+      overlay: true,
+      tags: data.tags,
+    );
   }
 
   @override
@@ -100,44 +106,37 @@ class FollowSyncResource implements SyncResource<FollowBundle> {
     FollowBundle local,
     FollowBundle remote,
   ) {
-    DateTime curLast = DateTime.fromMillisecondsSinceEpoch(
-      LocalStorageService.instance.getValue(
-        LocalStorageService.kWebDAVLastRecoverTime,
-        DateTime(2026, 1, 1).millisecondsSinceEpoch,
-      ),
-    );
-    var resFollows = _mergeFollowList(localList: local.follows, remoteList: remote.follows, curLast: curLast);
-
-    // tags after merge, logic from data_check
-    final Map<String, List<String>> tagMap = {
-      for (var tag in local.tags) tag.tag: <String>[],
-    };
-
-    for (var follow in resFollows) {
-      if (follow.tag != "全部") {
-        tagMap.putIfAbsent(follow.tag, () => <String>[]).add(follow.id);
-      }
-    }
-    final resTags = <FollowUserTag>[];
+    var resFollows = _mergeFollowList(localList: local.follows, remoteList: remote.follows);
+    final definitions = mergeSyncedTagDefinitions(local.tags, remote.tags);
+    final tagMap = {for (final tag in definitions) tag.tag: tag.copyWith(userId: [])};
     String? lastKey;
-    for (var entry in tagMap.entries) {
-      lastKey = FractionalIndexing.generateKeyBetween(lastKey, null);
-      final followUserTag = FollowUserTag(
-        id: lastKey,
-        tag: entry.key,
-        userId: entry.value,
-      );
-      resTags.add(followUserTag);
+    for (final tag in definitions) {
+      if (lastKey == null || tag.id.compareTo(lastKey) > 0) lastKey = tag.id;
     }
-    return FollowBundle(follows: resFollows, tags: resTags);
+    for (final follow in resFollows) {
+      if (follow.deleted) continue;
+      final memberships = <String>[];
+      var metadataTime = follow.metadataUpdatedAt;
+      for (final name in follow.tags) {
+        var tag = tagMap[name];
+        if (tag != null && tag.deleted) {
+          if (tag.updatedAt > metadataTime) metadataTime = tag.updatedAt;
+          continue;
+        }
+        if (tag == null) {
+          lastKey = FractionalIndexing.generateKeyBetween(lastKey, null);
+          tag = FollowUserTag(id: lastKey, tag: name, userId: [], updatedAt: follow.metadataUpdatedAt);
+        }
+        tagMap[name] = tag;
+        tag.userId.add(follow.id);
+        memberships.add(name);
+      }
+      follow.replaceTags(memberships);
+      follow.metadataUpdatedAt = metadataTime;
+    }
+    return FollowBundle(follows: resFollows, tags: tagMap.values.toList());
   }
 
-  // sync-double
-  // database op-log maybe better
-  // follow: cur! and webdav! -> keep;
-  // follow: cur! and webdav? -> cur_item.add_time>cur_last->keep; else->remove;
-  // follow: cur? and webdav! -> remote.item.add_time>cur_last->keep; else->remove
-  //
   // tombstone logic:
   // follow.deleted=true means the user was unfollowed
   // follow.updateTime stores the timestamp of the unfollow
@@ -147,12 +146,10 @@ class FollowSyncResource implements SyncResource<FollowBundle> {
   List<FollowUser> _mergeFollowList({
     required List<FollowUser> localList,
     required List<FollowUser> remoteList,
-    required DateTime curLast,
   }) {
     final Map<String, FollowUser> result = {};
     final localMap = {for (var item in localList) item.id: item};
     final remoteMap = {for (var item in remoteList) item.id: item};
-    final curLastSec = curLast.millisecondsSinceEpoch ~/ 1000;
 
     for (var localItem in localList) {
       var remoteItem = remoteMap[localItem.id];
@@ -183,42 +180,26 @@ class FollowSyncResource implements SyncResource<FollowBundle> {
           }
         } else {
           // 两边都是正常记录，合并观看时长
+          if (remoteItem.metadataUpdatedAt > localItem.metadataUpdatedAt) {
+            localItem.replaceTags(remoteItem.tags);
+            localItem.metadataUpdatedAt = remoteItem.metadataUpdatedAt;
+          }
           localItem.watchDurationSec = remoteItem.watchDurationSec + localItem.syncDuration;
+          // Keep the legacy duration projection usable by older peers.
+          // ignore: deprecated_member_use_from_same_package
           localItem.watchDuration = Duration(seconds: localItem.watchDurationSec).toHMSString();
           localItem.syncDuration = 0;
           result[localItem.id] = localItem;
         }
       } else {
-        // 仅本地有记录
-        if (localItem.deleted) {
-          // 本地是墓碑，如果墓碑时间在上次同步之后，保留墓碑以传播到其他设备
-          if (localItem.updateTime > curLastSec) {
-            result[localItem.id] = localItem;
-          }
-          // 否则墓碑已过期，不需要保留
-        } else {
-          // 本地是正常记录，如果添加时间在上次同步之后，保留
-          if (localItem.addTime.isAfter(curLast)) {
-            result[localItem.id] = localItem;
-          }
-        }
+        // Absence is not a deletion: old/partial backups may never have contained it.
+        result[localItem.id] = localItem;
       }
     }
 
     for (var remoteItem in remoteList) {
       if (!localMap.containsKey(remoteItem.id)) {
-        // 仅远程有记录
-        if (remoteItem.deleted) {
-          // 远程是墓碑，如果墓碑时间在上次同步之后，保留墓碑
-          if (remoteItem.updateTime > curLastSec) {
-            result[remoteItem.id] = remoteItem;
-          }
-        } else {
-          // 远程是正常记录，如果添加时间在上次同步之后，保留
-          if (remoteItem.addTime.isAfter(curLast)) {
-            result[remoteItem.id] = remoteItem;
-          }
-        }
+        result[remoteItem.id] = remoteItem;
       }
     }
     return result.values.toList();

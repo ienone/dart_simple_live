@@ -28,11 +28,26 @@ class DBService extends GetxService {
   }
 
   bool getFollowTagExist(String id) {
-    return tagBox.containsKey(id);
+    final tag = tagBox.get(id);
+    return tag != null && !tag.deleted;
   }
 
   List<FollowUserTag> getFollowTagList() {
-    return tagBox.values.toList();
+    return tagBox.values.where((tag) => !tag.deleted).toList()..sort((a, b) => a.id.compareTo(b.id));
+  }
+
+  List<FollowUserTag> getAllFollowTagList() {
+    return tagBox.values.toList()..sort((a, b) => a.id.compareTo(b.id));
+  }
+
+  String unusedFollowTagId({String? preferred}) {
+    final ids = getAllFollowTagList().map((tag) => tag.id).toList();
+    var candidate = preferred ?? FractionalIndexing.generateKeyBetween(ids.lastOrNull, null);
+    while (tagBox.containsKey(candidate)) {
+      final next = ids.firstWhereOrNull((id) => id.compareTo(candidate) > 0);
+      candidate = FractionalIndexing.generateKeyBetween(candidate, next);
+    }
+    return candidate;
   }
 
   Future updateFollowTag(FollowUserTag followTag) async {
@@ -44,24 +59,30 @@ class DBService extends GetxService {
     if (getFollowTagExistByTag(tag)) {
       return getFollowTag(tag)!;
     }
-    String? lastKey = tagBox.keys.lastOrNull;
-    final String uniqueId = FractionalIndexing.generateKeyBetween(lastKey, null);
+    final String uniqueId = unusedFollowTagId();
     final followUserTag = FollowUserTag(id: uniqueId, tag: tag, userId: []);
+    final sameName = tagBox.values.where((item) => item.tag == tag);
+    final previous = sameName.fold<int>(0, (time, item) => item.updatedAt > time ? item.updatedAt : time);
+    followUserTag.markChanged(after: previous);
     await tagBox.put(uniqueId, followUserTag);
     return followUserTag;
   }
 
-  Future deleteFollowTag(String id) async {
-    await tagBox.delete(id);
+  Future<void> deleteFollowTag(String id, {int after = 0}) async {
+    final tag = tagBox.get(id);
+    if (tag == null) return;
+    final tombstone = tag.copyWith(deleted: true, userId: []);
+    tombstone.markChanged(after: after);
+    await tagBox.put(id, tombstone);
   }
 
   FollowUserTag? getFollowTag(String tag) {
-    return tagBox.values.firstWhereOrNull((item) => item.tag == tag);
+    return tagBox.values.firstWhereOrNull((item) => item.tag == tag && !item.deleted);
   }
 
   // 判断tag名称是否重复
   bool getFollowTagExistByTag(String tag) {
-    return tagBox.values.any((item) => item.tag == tag);
+    return tagBox.values.any((item) => item.tag == tag && !item.deleted);
   }
 
   bool getFollowExist(String id) {
