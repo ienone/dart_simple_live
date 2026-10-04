@@ -22,7 +22,6 @@ import 'package:simple_live_app/app/utils.dart';
 import 'package:simple_live_app/app/utils/listen_fourth_button.dart';
 import 'package:simple_live_app/firebase_options.dart';
 import 'package:simple_live_app/hive_registrar.g.dart';
-import 'package:simple_live_app/modules/other/debug_log_page.dart';
 import 'package:simple_live_app/modules/settings/appstyle_settings/appstyle_setting_contorller.dart';
 import 'package:simple_live_app/routes/app_analytics_observer.dart';
 import 'package:simple_live_app/routes/app_pages.dart';
@@ -45,6 +44,7 @@ import 'package:simple_live_core/simple_live_core.dart';
 import 'package:window_manager/window_manager.dart';
 
 void main(List<String> arguments) async {
+  WidgetsFlutterBinding.ensureInitialized();
   final action = arguments.isEmpty ? null : arguments.first.toLowerCase();
   var path = (await getApplicationSupportDirectory()).path;
   if (!Platform.isAndroid && !Platform.isIOS) {
@@ -61,7 +61,6 @@ void main(List<String> arguments) async {
       return;
     }
   }
-  WidgetsFlutterBinding.ensureInitialized();
   // init-queue:
   // window(first)->migration->media_kit->Hive->services->start
   // window(second)->open
@@ -212,7 +211,7 @@ class MyApp extends StatelessWidget {
             Log.addDebugLog(text, (isError ?? false) ? Colors.red : Colors.grey);
             Log.writeLog(text, (isError ?? false) ? Level.error : Level.info);
           },
-          //debugShowCheckedModeBanner: false,
+          debugShowCheckedModeBanner: false,
           navigatorObservers: [FlutterSmartDialog.observer, if (Platform.isAndroid) AppAnalyticsObserver.observer],
           builder: FlutterSmartDialog.init(
             loadingBuilder: ((msg) => const AppLoaddingWidget()),
@@ -258,27 +257,6 @@ class MyApp extends StatelessWidget {
                         }
                       },
                       child: child!,
-                    ),
-                  ),
-
-                  //查看DEBUG日志按钮
-                  //只在Debug、Profile模式显示
-                  Visibility(
-                    visible: !kReleaseMode,
-                    child: Positioned(
-                      right: 12,
-                      bottom: 100 + context.mediaQueryViewPadding.bottom,
-                      child: Opacity(
-                        opacity: 0.4,
-                        child: ElevatedButton(
-                          child: const Text("DEBUG LOG"),
-                          onPressed: () {
-                            Get.bottomSheet(
-                              const DebugLogPage(),
-                            );
-                          },
-                        ),
-                      ),
                     ),
                   ),
                 ],
