@@ -1,0 +1,152 @@
+name: test-Slive packages
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['test-*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-packages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.platform }}-${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {platform: android, arch: all, runner: ubuntu-24.04}
+          - {platform: ios, arch: arm64, runner: macos-latest}
+          - {platform: macos, arch: universal, runner: macos-latest}
+          - {platform: windows, arch: x64, runner: windows-latest}
+          - {platform: linux, arch: x64, runner: ubuntu-24.04}
+          - {platform: linux, arch: arm64, runner: ubuntu-24.04-arm}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Prepare separate test application
+        run: python scripts/prepare_test_build.py
+      - uses: actions/setup-java@v4
+        if: matrix.platform == 'android'
+        with:
+          distribution: zulu
+          java-version: '17'
+      - uses: actions/cache@v4
+        if: matrix.platform == 'android'
+        with:
+          path: ~/.android/debug.keystore
+          key: test-slive-android-signing-v1
+      - name: Create Android test signing key
+        if: matrix.platform == 'android'
+        run: |
+          mkdir -p ~/.android
+          if [ ! -f ~/.android/debug.keystore ]; then
+            keytool -genkeypair -keystore ~/.android/debug.keystore -storepass android \
+              -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 \
+              -validity 10000 -dname 'CN=test-Slive, O=ienone, C=CN'
+          fi
+      - name: Linux dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev \
+            libasound2-dev libmpv-dev libayatana-appindicator3-dev libsecret-1-dev
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.47.1'
+          cache: true
+      - name: Rust
+        run: rustup update stable --no-self-update
+      - name: Dependencies
+        working-directory: simple_live_app
+        run: flutter pub get
+      - name: Build Android
+        if: matrix.platform == 'android'
+        working-directory: simple_live_app
+        run: |
+          flutter build apk --release --split-per-abi
+          mkdir -p ../dist
+          for file in build/app/outputs/flutter-apk/*-release.apk; do
+            arch=$(basename "$file" | sed 's/^app-//;s/-release.apk$//')
+            cp "$file" "../dist/test-Slive-android-$arch.apk"
+          done
+      - name: Build iOS (unsigned)
+        if: matrix.platform == 'ios'
+        working-directory: simple_live_app
+        run: |
+          flutter build ios --release --no-codesign
+          mkdir -p ../dist build/ios/iphoneos/Payload
+          cp -R build/ios/iphoneos/Runner.app build/ios/iphoneos/Payload/
+          (cd build/ios/iphoneos && zip -qry ../../../../dist/test-Slive-ios-unsigned.ipa Payload)
+      - name: Build macOS
+        if: matrix.platform == 'macos'
+        working-directory: simple_live_app
+        run: |
+          flutter build macos --release
+          mkdir -p ../dist /tmp/test-slive-dmg
+          app=$(find build/macos/Build/Products/Release -maxdepth 1 -name '*.app' -print -quit)
+          codesign --force --deep --sign - "$app"
+          ditto -c -k --sequesterRsrc --keepParent "$app" ../dist/test-Slive-macos-universal.zip
+          cp -R "$app" /tmp/test-slive-dmg/
+          ln -s /Applications /tmp/test-slive-dmg/Applications
+          hdiutil create -volname test-Slive -srcfolder /tmp/test-slive-dmg \
+            -ov -format UDZO ../dist/test-Slive-macos-universal.dmg
+      - name: Build Windows
+        if: matrix.platform == 'windows'
+        working-directory: simple_live_app
+        run: flutter build windows --release
+      - name: Package Windows
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive simple_live_app/build/windows/x64/runner/Release/* dist/test-Slive-windows-x64.zip
+          & 'C:/Program Files (x86)/Inno Setup 6/ISCC.exe' scripts/test-windows.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build Linux
+        if: matrix.platform == 'linux'
+        working-directory: simple_live_app
+        run: flutter build linux --release
+      - name: Package Linux
+        if: matrix.platform == 'linux'
+        env:
+          BUILD_ARCH: ${{ matrix.arch }}
+        run: bash scripts/package_test_linux.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-Slive-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/test-')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish test packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TEST_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TEST_TAG" dist/* --prerelease --title "$TEST_TAG" \
+            --notes 'test-Slive：独立应用标识，可与正式版共存。Android 使用测试签名；iOS IPA 未签名，需自行签名安装；macOS 未公证，Windows 未签名。请勿用于覆盖正式版。'

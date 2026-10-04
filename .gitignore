@@ -10,3 +10,6 @@ build/
 dev-tool.ps1
 *.py
 simple_live_app/iconfont.yaml
+
+# CI-only test package identity preparation
+!scripts/prepare_test_build.py
