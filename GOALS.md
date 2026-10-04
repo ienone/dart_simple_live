@@ -73,6 +73,6 @@ were restored and matched the pre-test backup hashes before normal debug launch.
 `publish_app_test.yaml` builds tags named `test-*` into a prerelease with Android,
 iOS, macOS, Windows and Linux packages. CI applies `scripts/prepare_test_build.py`
 to its disposable checkout; formal builds retain their existing identity.
-Android uses a cached test key, iOS is unsigned, macOS is ad-hoc signed and
+Android uses the fixed `TEST_ANDROID_KEYSTORE_BASE64` repository secret, iOS is unsigned, macOS is ad-hoc signed and
 Windows is unsigned. Test application IDs and desktop data directories are
 separate from the formal app. Firebase is disabled in the test packages.

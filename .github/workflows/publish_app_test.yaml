@@ -42,20 +42,18 @@ jobs:
         with:
           distribution: zulu
           java-version: '17'
-      - uses: actions/cache@v4
+      - name: Restore fixed Android test signing key
         if: matrix.platform == 'android'
-        with:
-          path: ~/.android/debug.keystore
-          key: test-slive-android-signing-v1
-      - name: Create Android test signing key
-        if: matrix.platform == 'android'
+        env:
+          TEST_ANDROID_KEYSTORE_BASE64: ${{ secrets.TEST_ANDROID_KEYSTORE_BASE64 }}
         run: |
+          set -euo pipefail
+          test -n "$TEST_ANDROID_KEYSTORE_BASE64" || { echo 'Missing TEST_ANDROID_KEYSTORE_BASE64 secret'; exit 1; }
+          umask 077
           mkdir -p ~/.android
-          if [ ! -f ~/.android/debug.keystore ]; then
-            keytool -genkeypair -keystore ~/.android/debug.keystore -storepass android \
-              -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 \
-              -validity 10000 -dname 'CN=test-Slive, O=ienone, C=CN'
-          fi
+          printf '%s' "$TEST_ANDROID_KEYSTORE_BASE64" | base64 --decode > ~/.android/debug.keystore
+          keytool -list -v -keystore ~/.android/debug.keystore -storepass android \
+            -alias androiddebugkey | grep -F '1C:E8:2F:B0:55:E6:91:95:DD:24:D3:FD:1E:61:4B:9B:4D:0D:03:D8:70:78:AA:58:97:2A:1B:BE:53:C8:0D:96'
       - name: Linux dependencies
         if: matrix.platform == 'linux'
         run: |
