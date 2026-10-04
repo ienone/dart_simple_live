@@ -113,7 +113,7 @@ class DouyuUtils {
   }
 
   // 用于流/登录/弹幕，暂时只需要流获取
-  static Future<String> sign(String rid, {int rate = -1, String cdn = "hw-h5", String cookie = ''}) async {
+  static Future<String> sign(String rid, {int rate = -1, String cdn = "hw-h5", String cookie = '', bool audioOnly = false}) async {
     var ts = DateTime.now().millisecondsSinceEpoch ~/ 1000;
     await _encKeyUpdate(cookie: cookie);
     String randStr = _encKey["rand_str"] ?? "";
@@ -136,8 +136,8 @@ class DouyuUtils {
         'cdn': cdn,
         'ver': 'Douyu_new',
         'rate': '$rate',
-        'hevc': '1',
-        'fa': '0',
+        'hevc': audioOnly ? '0' : '1',
+        'fa': audioOnly ? '1' : '0',
         'ive': '0',
       },
     ).query;

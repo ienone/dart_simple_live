@@ -54,7 +54,9 @@ Widget buildFullControls(
   return buildDragToMoveArea(
     child: Stack(
       children: [
-        Container(),
+        Obx(() => controller.audioOnly.value
+            ? const Positioned.fill(child: ColoredBox(color: Colors.black))
+            : const SizedBox.shrink()),
         buildDanmuView(videoState, controller),
 
         Center(
@@ -62,12 +64,10 @@ Widget buildFullControls(
               StreamBuilder(
             stream: videoState.widget.controller.player.stream.buffering,
             initialData: videoState.widget.controller.player.state.buffering,
-            builder: (_, s) => Visibility(
-              visible: s.data ?? false,
-              child: const Center(
-                child: CircularProgressIndicator(),
-              ),
-            ),
+            builder: (_, s) => Obx(() => Visibility(
+                  visible: !controller.playbackPaused.value && (controller.playbackLoading.value || (s.data ?? false)),
+                  child: const Center(child: CircularProgressIndicator()),
+                )),
           ),
         ),
         Positioned.fill(
@@ -231,7 +231,10 @@ Widget buildFullControls(
               ),
               child: Row(
                 children: [
+                  buildPlaybackToggle(controller),
+                  buildAudioOnlyToggle(controller),
                   IconButton(
+                    tooltip: '刷新直播间',
                     onPressed: () {
                       controller.refreshRoom();
                     },
@@ -287,26 +290,28 @@ Widget buildFullControls(
                       ),
                     ),
                   ),
-                  TextButton(
-                    onPressed: () {
-                      showQualitesInfo(controller);
-                    },
-                    child: Obx(
-                      () => Text(
-                        controller.currentQualityInfo.value,
+                  if (MediaQuery.sizeOf(videoState.context).width >= 600)
+                    TextButton(
+                      onPressed: () {
+                        showQualitesInfo(controller);
+                      },
+                      child: Obx(
+                        () => Text(
+                          controller.currentQualityInfo.value,
+                          style: const TextStyle(color: Colors.white, fontSize: 15),
+                        ),
+                      ),
+                    ),
+                  if (MediaQuery.sizeOf(videoState.context).width >= 600)
+                    TextButton(
+                      onPressed: () {
+                        showLinesInfo(controller);
+                      },
+                      child: Text(
+                        controller.currentLineInfo.value,
                         style: const TextStyle(color: Colors.white, fontSize: 15),
                       ),
                     ),
-                  ),
-                  TextButton(
-                    onPressed: () {
-                      showLinesInfo(controller);
-                    },
-                    child: Text(
-                      controller.currentLineInfo.value,
-                      style: const TextStyle(color: Colors.white, fontSize: 15),
-                    ),
-                  ),
                   Obx(
                     // only pip
                     () => Visibility(
@@ -417,19 +422,19 @@ Widget buildControls(
   GlobalKey volumeButtonKey = GlobalKey();
   return Stack(
     children: [
-      Container(),
+      Obx(() => controller.audioOnly.value
+          ? const Positioned.fill(child: ColoredBox(color: Colors.black))
+          : const SizedBox.shrink()),
       buildDanmuView(videoState, controller),
       // 中间
       Center(
         child: StreamBuilder(
           stream: videoState.widget.controller.player.stream.buffering,
           initialData: videoState.widget.controller.player.state.buffering,
-          builder: (_, s) => Visibility(
-            visible: s.data ?? false,
-            child: const Center(
-              child: CircularProgressIndicator(),
-            ),
-          ),
+          builder: (_, s) => Obx(() => Visibility(
+                visible: !controller.playbackPaused.value && (controller.playbackLoading.value || (s.data ?? false)),
+                child: const Center(child: CircularProgressIndicator()),
+              )),
         ),
       ),
       Positioned.fill(
@@ -469,7 +474,10 @@ Widget buildControls(
             ),
             child: Row(
               children: [
+                buildPlaybackToggle(controller),
+                buildAudioOnlyToggle(controller),
                 IconButton(
+                  tooltip: '刷新直播间',
                   onPressed: () {
                     controller.refreshRoom();
                   },
@@ -626,7 +634,7 @@ Widget buildDanmuView(VideoState videoState, LiveRoomController controller) {
     bottom: padding.bottom,
     child: Obx(
       () => Offstage(
-        offstage: !controller.showDanmakuState.value,
+        offstage: !controller.showDanmakuState.value || controller.audioOnly.value || controller.playbackPaused.value,
         child: Padding(
           padding: controller.fullScreenState.value
               ? EdgeInsets.only(
@@ -869,3 +877,18 @@ void showFollowUser(LiveRoomController controller) {
     ),
   );
 }
+
+Widget buildPlaybackToggle(LiveRoomController controller) => Obx(() => IconButton(
+      key: const ValueKey('live-playback-toggle'),
+      tooltip: controller.playbackPaused.value ? '播放' : '暂停',
+      onPressed: controller.toggleLivePlayback,
+      icon: Icon(controller.playbackPaused.value ? Icons.play_arrow : Icons.pause, color: Colors.white),
+    ));
+
+Widget buildAudioOnlyToggle(LiveRoomController controller) => Obx(() => IconButton(
+      key: const ValueKey('live-audio-only-toggle'),
+      tooltip: controller.audioOnly.value ? '恢复画面' : '只听音频',
+      onPressed: () => controller.setAudioOnly(!controller.audioOnly.value),
+      icon: Icon(controller.audioOnly.value ? Icons.headphones : Icons.headphones_outlined,
+          color: controller.audioOnly.value ? Theme.of(Get.context!).colorScheme.primary : Colors.white),
+    ));

@@ -2,12 +2,13 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
+import 'package:dio/dio.dart';
 import 'package:html_unescape/html_unescape.dart';
 import 'package:simple_live_core/simple_live_core.dart';
 import 'package:simple_live_core/src/common/http_client.dart';
 import 'package:simple_live_core/src/platforms/douyu/douyu_utils.dart';
 
-class DouyuSite implements LiveSite {
+class DouyuSite implements LiveSite, LiveAudioSource {
   @override
   String id = "douyu";
 
@@ -148,6 +149,75 @@ class DouyuSite implements LiveSite {
     );
 
     return "${result["data"]["rtmp_url"]}/${HtmlUnescape().convert(result["data"]["rtmp_live"].toString())}";
+  }
+
+  @override
+  Future<LivePlayUrl?> getAudioOnlyUrls({
+    required LiveRoomDetail detail,
+    required LivePlayQuality quality,
+    required LivePlayUrl videoUrls,
+  }) async {
+    final data = quality.data;
+    if (data is! DouyuPlayData || !detail.status) return null;
+    const budget = Duration(seconds: 8);
+    final watch = Stopwatch()..start();
+    final cdns = data.cdns.isEmpty ? [''] : data.cdns.toSet().toList();
+    for (final cdn in cdns) {
+      if (watch.elapsed >= budget) break;
+      final cancel = CancelToken();
+      try {
+        // The native-audio response advertises rate=0 only. Keep the selected
+        // video quality intact for the player's ordinary-source fallback.
+        final sign = await DouyuUtils.sign(
+          detail.roomId,
+          rate: 0,
+          cdn: cdn,
+          cookie: _cookie,
+          audioOnly: true,
+        ).timeout(budget - watch.elapsed);
+        if (watch.elapsed >= budget) break;
+        final result = await HttpClient.instance
+            .postJson(
+              'https://www.douyu.com/lapi/live/getH5PlayV1/${detail.roomId}',
+              data: sign,
+              formUrlEncoded: true,
+              header: DouyuUtils.requestHeader(
+                roomId: detail.roomId,
+                cookie: _cookie,
+              ),
+              cancel: cancel,
+            )
+            .timeout(budget - watch.elapsed);
+        if (result is! Map || result['error'] != 0 || result['data'] is! Map) {
+          continue;
+        }
+        final payload = result['data'] as Map;
+        final base = payload['rtmp_url'];
+        final stream = payload['rtmp_live'];
+        if (base is! String ||
+            stream is! String ||
+            base.isEmpty ||
+            stream.isEmpty) {
+          continue;
+        }
+        final url = HtmlUnescape().convert('$base/$stream');
+        final uri = Uri.tryParse(url);
+        // Only accept the provider's explicit audio response; never append a
+        // guessed parameter to a normal signed video URL.
+        if (uri == null ||
+            !uri.hasAuthority ||
+            (uri.scheme != 'https' && uri.scheme != 'http') ||
+            uri.queryParameters['only-audio'] != '1') {
+          continue;
+        }
+        return LivePlayUrl(urls: [url], headers: videoUrls.headers);
+      } catch (_) {
+        // This optional capability must not break decoder-disabled fallback.
+      } finally {
+        cancel.cancel();
+      }
+    }
+    return null;
   }
 
   @override

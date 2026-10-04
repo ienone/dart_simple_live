@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:dio/dio.dart';
 
 import 'package:crypto/crypto.dart';
 import 'package:simple_live_core/src/common/convert_helper.dart';
@@ -16,7 +17,7 @@ import 'package:simple_live_core/src/model/live_room_detail.dart';
 import 'package:simple_live_core/src/model/live_play_quality.dart';
 import 'package:simple_live_core/src/model/live_category_result.dart';
 
-class BiliBiliSite implements LiveSite {
+class BiliBiliSite implements LiveSite, LiveAudioSource {
   @override
   String id = "bilibili";
 
@@ -202,6 +203,141 @@ class BiliBiliSite implements LiveSite {
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36 Edg/115.0.1901.188"
       },
     );
+  }
+
+  @override
+  Future<LivePlayUrl?> getAudioOnlyUrls({
+    required LiveRoomDetail detail,
+    required LivePlayQuality quality,
+    required LivePlayUrl videoUrls,
+  }) async {
+    final cancel = CancelToken();
+    try {
+      final headers = await getHeader().timeout(const Duration(seconds: 4));
+      final result = await HttpClient.instance
+          .getJson(
+            "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo",
+            queryParameters: {
+              "room_id": detail.roomId,
+              "protocol": "0",
+              "format": "0",
+              "codec": "0",
+              "platform": "web",
+              "qn": quality.data,
+              "only_audio": 1,
+            },
+            header: headers,
+            cancel: cancel,
+          )
+          .timeout(
+            const Duration(seconds: 4),
+            onTimeout: () {
+              cancel.cancel();
+              return null;
+            },
+          );
+      if (result is Map && result["code"] == 0) {
+        final streams = result["data"]?["playurl_info"]?["playurl"]?["stream"];
+        final urls = <String>{};
+        if (streams is List) {
+          for (final stream in streams.whereType<Map>()) {
+            if (stream["protocol_name"] != "http_stream") continue;
+            final formats = stream["format"];
+            if (formats is! List) continue;
+            for (final format in formats.whereType<Map>()) {
+              if (format["format_name"] != "flv") continue;
+              final codecs = format["codec"];
+              if (codecs is! List) continue;
+              for (final codec in codecs.whereType<Map>()) {
+                if (codec["codec_name"] != "avc") continue;
+                final baseUrl = codec["base_url"];
+                final sources = codec["url_info"];
+                if (baseUrl is! String || sources is! List) continue;
+                for (final source in sources.whereType<Map>()) {
+                  final host = source["host"];
+                  final extra = source["extra"];
+                  if (host is! String || extra is! String) continue;
+                  final url = "$host$baseUrl$extra";
+                  final uri = Uri.tryParse(url);
+                  // Only the API's ptype=1 FLV path was verified audio-only.
+                  // Its AVC metadata can remain even with no video packets;
+                  // HLS from the same response may still contain video.
+                  if (uri != null &&
+                      (uri.scheme == "https" || uri.scheme == "http") &&
+                      uri.host.isNotEmpty &&
+                      uri.path.endsWith('.flv') &&
+                      uri.queryParameters["ptype"] == "1") {
+                    urls.add(url);
+                  }
+                }
+              }
+            }
+          }
+        }
+        if (urls.isNotEmpty) {
+          return LivePlayUrl(
+            urls: [
+              ...urls.where((url) => !Uri.parse(url).host.contains("mcdn")),
+              ...urls.where((url) => Uri.parse(url).host.contains("mcdn")),
+            ],
+            headers:
+                videoUrls.headers ??
+                {"referer": kDefaultReferer, "user-agent": kDefaultUserAgent},
+          );
+        }
+      }
+    } catch (_) {
+      // Native audio is optional; keep ordinary playback available on failure.
+    }
+
+    // A separate HLS rendition is safe only when the master declares AUDIO.
+    final masters = videoUrls.urls
+        .where((url) => Uri.tryParse(url)?.path.endsWith('.m3u8') ?? false)
+        .take(2);
+    for (final url in masters) {
+      final cancel = CancelToken();
+      try {
+        final manifest = await HttpClient.instance
+            .getText(url, header: videoUrls.headers, cancel: cancel)
+            .timeout(
+              const Duration(seconds: 4),
+              onTimeout: () {
+                cancel.cancel();
+                return '';
+              },
+            );
+        if (!manifest.trimLeft().startsWith('#EXTM3U')) continue;
+        final renditions = <Map<String, String>>[];
+        for (final line in const LineSplitter().convert(manifest)) {
+          if (!line.startsWith('#EXT-X-MEDIA:')) continue;
+          final attrs = <String, String>{};
+          for (final match in RegExp(
+            r'([A-Z0-9-]+)=(?:"([^"]*)"|([^,]*))',
+          ).allMatches(line)) {
+            attrs[match.group(1)!] = match.group(2) ?? match.group(3)!;
+          }
+          if (attrs['TYPE'] == 'AUDIO' && (attrs['URI']?.isNotEmpty ?? false)) {
+            renditions.add(attrs);
+          }
+        }
+        renditions.sort(
+          (a, b) => (b['DEFAULT'] == 'YES' ? 1 : 0).compareTo(
+            a['DEFAULT'] == 'YES' ? 1 : 0,
+          ),
+        );
+        final urls = renditions
+            .map((item) => Uri.parse(url).resolve(item['URI']!))
+            .where((uri) => uri.scheme == 'https' || uri.scheme == 'http')
+            .map((uri) => uri.toString())
+            .toList();
+        if (urls.isNotEmpty) {
+          return LivePlayUrl(urls: urls, headers: videoUrls.headers);
+        }
+      } catch (_) {
+        // Missing/unsupported manifests must not prevent ordinary audio playback.
+      }
+    }
+    return null;
   }
 
   @override

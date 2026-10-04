@@ -237,7 +237,7 @@ mixin PlayerStateMixin on PlayerMixin {
 }
 mixin PlayerDanmakuMixin on PlayerStateMixin {
   /// 弹幕控制器
-  late DanmakuController? danmakuController;
+  DanmakuController? danmakuController;
 
   void initDanmakuController(DanmakuController e) {
     danmakuController = e;
@@ -267,14 +267,21 @@ mixin PlayerSystemMixin on PlayerMixin, PlayerStateMixin, PlayerDanmakuMixin {
   final pip = Floating();
   StreamSubscription<PiPStatus>? _pipSubscription;
 
+  /// Screen inhibition is optional (for example, a headless Linux session may
+  /// have no ScreenSaver D-Bus service). Its failure must not stop live playback.
+  Future<void> setScreenAwake(bool enabled) async {
+    try {
+      await WakelockPlus.toggle(enable: enabled);
+    } catch (error) {
+      Log.w('Screen wake lock unavailable: $error');
+    }
+  }
+
   /// 初始化一些系统状态
   void initSystem() async {
     if (Platform.isAndroid || Platform.isIOS) {
       volumeController.showSystemUI = false;
     }
-
-    // 屏幕常亮
-    //WakelockPlus.enable();
 
     // 开始隐藏计时
     resetHideControlsTimer();
@@ -299,7 +306,7 @@ mixin PlayerSystemMixin on PlayerMixin, PlayerStateMixin, PlayerDanmakuMixin {
       }
     }
 
-    await WakelockPlus.disable();
+    await setScreenAwake(false);
   }
 
   /// 进入全屏
@@ -752,9 +759,10 @@ class PlayerController extends BaseController
     });
 
     _playingSubscription = player.stream.playing.listen((event) {
-      if (event) {
-        WakelockPlus.enable();
-        Log.d("Playing");
+      if (event && keepScreenAwakeDuringPlayback) {
+        unawaited(setScreenAwake(true));
+      } else {
+        unawaited(setScreenAwake(false));
       }
     });
 
@@ -799,12 +807,12 @@ class PlayerController extends BaseController
   }
 
   void mediaEnd() {
-    WakelockPlus.disable();
+    unawaited(setScreenAwake(false));
   }
 
   void mediaError(String error) {
     // 弱网调整：用户自责
-    // WakelockPlus.disable();
+    // Screen inhibition is released by stop/completion.
   }
 
   Future<void> toggleOSDStats() async {
@@ -917,6 +925,10 @@ class PlayerController extends BaseController
     );
   }
 
+  bool get keepScreenAwakeDuringPlayback => true;
+
+  Future<void> beforePlayerDispose() async {}
+
   @override
   void onClose() async {
     Log.w("播放器关闭");
@@ -928,6 +940,7 @@ class PlayerController extends BaseController
     await resetSystem();
     // todo: https://github.com/media-kit/media-kit/issues/1443
     // only in debug mode
+    await beforePlayerDispose();
     await player.dispose();
     super.onClose();
   }

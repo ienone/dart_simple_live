@@ -7,7 +7,7 @@ import 'package:simple_live_core/src/common/http_client.dart';
 import 'package:simple_live_core/src/platforms/douyin/douyin_utils.dart';
 import 'douyin_request_params.dart';
 
-class DouyinSite implements LiveSite {
+class DouyinSite implements LiveSite, LiveAudioSource {
   @override
   String id = "douyin";
 
@@ -434,8 +434,54 @@ class DouyinSite implements LiveSite {
     var renderData = RegExp(r'\{\\"state\\":\{\\"appStore.*?\]\\n').firstMatch(result)?.group(0) ?? "";
     var str = renderData.trim().replaceAll('\\"', '"').replaceAll(r"\\", r"\").replaceAll(']\\n', "");
     var renderDataJson = json.decode(str);
-    return renderDataJson["state"];
+    final state = renderDataJson["state"] as Map;
+    final streamUrl = state["roomStore"]?["roomInfo"]?["room"]?["stream_url"];
+    if (streamUrl is Map) _resolveStreamDataReferences(streamUrl, result);
+    return state;
   }
+
+  void _resolveStreamDataReferences(Map streamUrl, String html) {
+    final sdk = streamUrl["live_core_sdk_data"];
+    final pulls = <Map>[
+      if (sdk is Map && sdk["pull_data"] is Map) sdk["pull_data"] as Map,
+      if (streamUrl["pull_datas"] is Map) ...(streamUrl["pull_datas"] as Map).values.whereType<Map>(),
+    ];
+    if (!pulls.any(
+      (pull) => pull["stream_data"] is String && RegExp(r'^\$[0-9a-f]+$').hasMatch(pull["stream_data"] as String),
+    )) {
+      return;
+    }
+
+    // The official streaming SSR can store SDK JSON in a separate text record.
+    // Its T record length counts UTF-8 bytes, and the URL signatures are kept as-is.
+    final String chunks;
+    try {
+      chunks = RegExp(r'self\.__\w+_f\.push\(\[\d+,("(?:\\.|[^"\\])*")\]\)')
+          .allMatches(html)
+          .map((match) => json.decode(match.group(1)!) as String)
+          .join();
+    } on FormatException {
+      return;
+    }
+    for (final pull in pulls) {
+      final reference = pull["stream_data"];
+      if (reference is! String || !RegExp(r'^\$[0-9a-f]+$').hasMatch(reference)) continue;
+      final id = reference.substring(1);
+      final record = RegExp('(?:^|[^0-9a-f])$id:T([0-9a-f]+),').firstMatch(chunks);
+      if (record == null) continue;
+      try {
+        final length = int.parse(record.group(1)!, radix: 16);
+        final remainder = utf8.encode(chunks.substring(record.end));
+        if (remainder.length < length) continue;
+        final value = utf8.decode(remainder.sublist(0, length));
+        final data = json.decode(value);
+        if (data is Map && data["data"] is Map) pull["stream_data"] = value;
+      } on FormatException {
+        // Keep the existing video fallback if an SSR record is incomplete.
+      }
+    }
+  }
+
 
   /// 通过webRid获取直播间Web信息
   /// - [webRid] 直播间RID
@@ -553,6 +599,50 @@ class DouyinSite implements LiveSite {
   @override
   Future<LivePlayUrl> getPlayUrls({required LiveRoomDetail detail, required LivePlayQuality quality}) async {
     return LivePlayUrl(urls: quality.data);
+  }
+
+  @override
+  Future<LivePlayUrl?> getAudioOnlyUrls({
+    required LiveRoomDetail detail,
+    required LivePlayQuality quality,
+    required LivePlayUrl videoUrls,
+  }) async {
+    final source = detail.data;
+    if (source is! Map) return null;
+    final sdk = source["live_core_sdk_data"];
+    if (sdk is! Map) return null;
+    final pull = sdk["pull_data"];
+    if (pull is! Map) return null;
+    dynamic streams = pull["stream_data"];
+    if (streams is String) {
+      try {
+        streams = json.decode(streams);
+      } on FormatException {
+        return null;
+      }
+    }
+    if (streams is! Map || streams["data"] is! Map) return null;
+    final audio = (streams["data"] as Map)["ao"];
+    if (audio is! Map || audio["main"] is! Map) return null;
+    final url = (audio["main"] as Map)["flv"];
+    if (url is! String || url.isEmpty) return null;
+    try {
+      final uri = Uri.tryParse(url);
+      if (uri == null ||
+          !uri.hasAuthority ||
+          (uri.scheme != 'http' && uri.scheme != 'https') ||
+          uri.queryParameters['only_audio'] != '1') {
+        return null;
+      }
+    } on FormatException {
+      return null;
+    }
+    // ao is supplied by Douyin. Preserve its original query and signature;
+    // removing only_audio would request video again.
+    return LivePlayUrl(
+      urls: [url],
+      headers: {'Referer': kDefaultReferer, 'User-Agent': DouyinRequestParams.kDefaultUserAgent, ...?videoUrls.headers},
+    );
   }
 
   @override
