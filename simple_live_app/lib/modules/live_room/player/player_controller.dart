@@ -237,7 +237,7 @@ mixin PlayerStateMixin on PlayerMixin {
 }
 mixin PlayerDanmakuMixin on PlayerStateMixin {
   /// 弹幕控制器
-  late DanmakuController? danmakuController;
+  DanmakuController? danmakuController;
 
   void initDanmakuController(DanmakuController e) {
     danmakuController = e;

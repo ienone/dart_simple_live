@@ -44,6 +44,20 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   List<LiveMessage> danmakuBuffer = [];
   Timer? danmakuTimer;
   bool _isProcessingBuffer = false;
+  int _danmakuGeneration = 0;
+  int _danmakuBufferGeneration = 0;
+  int get danmakuGeneration => _danmakuGeneration;
+  int _roomGeneration = 0;
+  bool _closing = false;
+  final danmakuReconnecting = false.obs;
+  final danmakuConnected = false.obs;
+
+
+  void _clearDanmakuPlayback() {
+    ++_danmakuBufferGeneration;
+    danmakuBuffer.clear();
+    danmakuController?.clear();
+  }
 
   LiveRoomController({
     required this.pSite,
@@ -132,6 +146,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     followed.value = FollowService.instance.getFollowExist("${site.id}_$roomId");
     // 解冻：更新 lastWatchTime 并从休眠列表移除
     FollowService.instance.resumeUser("${site.id}_$roomId");
+    _initDanmakuMask();
     loadData();
 
     scrollController.addListener(scrollListener);
@@ -140,7 +155,6 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
         updateDanmuOption(danmakuController?.option.copyWith(fontSize: data));
       }
     });
-    _initDanmakuMask();
     super.onInit();
   }
 
@@ -173,6 +187,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
     _isProcessingBuffer = true;
     try {
+      final generation = _danmakuGeneration;
+      final bufferGeneration = _danmakuBufferGeneration;
       final batch = List<LiveMessage>.from(danmakuBuffer);
       danmakuBuffer.clear();
 
@@ -180,6 +196,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       final nowMs = DateTime.now().millisecondsSinceEpoch;
       final allowedResults = await rustDanmakuMask.allowListBatch(texts: batchMessages, nowMs: BigInt.from(nowMs));
 
+      if (_closing || generation != _danmakuGeneration || bufferGeneration != _danmakuBufferGeneration) return;
       final filteredBatch = <LiveMessage>[];
       for (int i = 0; i < batch.length; i++) {
         if (allowedResults[i] == 1) {
@@ -266,12 +283,63 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   }
   // 弹窗逻辑
 
-  void refreshRoom() {
-    //messages.clear();
-    superChats.clear();
-    liveDanmaku.stop();
+  Future<void> refreshRoom() async {
+    if (_closing) return;
+    await loadData();
+  }
 
-    loadData();
+  /// Drop old callbacks and any in-flight filtered batch before reconnecting.
+  Future<void> _resetDanmaku() async {
+    _danmakuGeneration++;
+    danmakuConnected.value = false;
+    final previous = liveDanmaku;
+    previous.onMessage = null;
+    previous.onClose = null;
+    previous.onReady = null;
+    liveDanmaku = site.liveSite.getDanmaku();
+    _clearDanmakuPlayback();
+    messages.clear();
+    superChats.clear();
+    disableAutoScroll.value = false;
+    danmakuController?.clear();
+    rustDanmakuMask.reset();
+    await previous.stop();
+  }
+
+  Future<void> reconnectDanmaku() async {
+    if (_closing || danmakuReconnecting.value || detail.value == null) return;
+    danmakuReconnecting.value = true;
+    final roomGeneration = _roomGeneration;
+    try {
+      await _resetDanmaku();
+      if (_closing || roomGeneration != _roomGeneration) return;
+      // Refresh authentication/connection data, leaving video and its URL intact.
+      final fresh = await site.liveSite.getRoomDetail(roomId: roomId);
+      if (_closing || roomGeneration != _roomGeneration) return;
+      await _connectDanmaku(fresh);
+    } catch (e) {
+      if (!_closing && roomGeneration == _roomGeneration) {
+        SmartDialog.showToast('弹幕重连失败');
+      }
+    } finally {
+      if (!_closing) danmakuReconnecting.value = false;
+    }
+  }
+
+  Future<void> _connectDanmaku(LiveRoomDetail room) async {
+    final generation = _danmakuGeneration;
+    final connection = liveDanmaku;
+    connection.onMessage = (message) {
+      if (!_closing && generation == _danmakuGeneration) onWSMessage(message);
+    };
+    connection.onClose = (_) {
+      if (!_closing && generation == _danmakuGeneration) danmakuConnected.value = false;
+    };
+    connection.onReady = () {
+      if (!_closing && generation == _danmakuGeneration) danmakuConnected.value = true;
+    };
+    await connection.start(room.danmakuData);
+    if (_closing || generation != _danmakuGeneration) await connection.stop();
   }
 
   /// 聊天栏始终滚动到底部
@@ -283,13 +351,6 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       }
       scrollController.jumpTo(scrollController.position.maxScrollExtent);
     }
-  }
-
-  /// 初始化弹幕接收事件
-  void initDanmau() {
-    liveDanmaku.onMessage = onWSMessage;
-    liveDanmaku.onClose = onWSClose;
-    liveDanmaku.onReady = onWSReady;
   }
 
   /// 接收到WebSocket信息
@@ -418,35 +479,17 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     }
   }
 
-  /// 添加一条系统消息
-  void addSysMsg(String msg) {
-    messages.add(
-      LiveMessage(
-        type: LiveMessageType.chat,
-        userName: "LiveSysMessage",
-        message: msg,
-        color: LiveMessageColor.white,
-      ),
-    );
-  }
-
-  /// 接收到WebSocket关闭信息
-  void onWSClose(String msg) {
-    addSysMsg(msg);
-  }
-
-  /// WebSocket准备就绪
-  void onWSReady() {
-    addSysMsg("弹幕服务器连接正常");
-  }
-
   /// 加载直播间信息
-  void loadData() async {
+  Future<void> loadData() async {
+    final generation = ++_roomGeneration;
     try {
+      await _resetDanmaku();
+      if (_closing || generation != _roomGeneration) return;
       SmartDialog.showLoading(msg: "");
       loadError.value = false;
-      addSysMsg("正在读取直播间信息");
-      detail.value = await site.liveSite.getRoomDetail(roomId: roomId);
+      final room = await site.liveSite.getRoomDetail(roomId: roomId);
+      if (_closing || generation != _roomGeneration) return;
+      detail.value = room;
 
       if (site.id == Constant.kDouyin) {
         // 1.6.0之前收藏的WebRid
@@ -483,12 +526,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       if (liveStatus.value) {
         getSuperChatMessage();
         getPlayQualites();
-        addSysMsg("开始连接弹幕服务器");
-        initDanmau();
-        liveDanmaku.start(detail.value?.danmakuData);
-      }
-      if (detail.value!.isRecord) {
-        addSysMsg("当前主播未开播，正在轮播录像");
+        await _connectDanmaku(room);
       }
     } catch (e) {
       Log.logPrint(e);
@@ -649,13 +687,13 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   }
 
   /// 读取SC
-  void getSuperChatMessage() async {
+  Future<void> getSuperChatMessage() async {
+    final generation = _danmakuGeneration;
     try {
-      var sc = await site.liveSite.getSuperChatMessage(roomId: detail.value!.roomId);
-      superChats.addAll(sc);
+      final sc = await site.liveSite.getSuperChatMessage(roomId: detail.value!.roomId);
+      if (!_closing && generation == _danmakuGeneration) superChats.addAll(sc);
     } catch (e) {
-      Log.logPrint(e);
-      addSysMsg("SC读取失败");
+      Log.w('Super chat request failed: ${e.runtimeType}');
     }
   }
 
@@ -1191,30 +1229,17 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     }
   }
 
-  void resetRoom(Site site, String roomId) async {
-    if (this.site == site && this.roomId == roomId) {
-      return;
-    }
-
+  Future<void> resetRoom(Site site, String roomId) async {
+    if (_closing || (this.site == site && this.roomId == roomId)) return;
+    ++_roomGeneration;
     rxSite.value = site;
     rxRoomId.value = roomId;
-
-    // 清除全部消息
-    liveDanmaku.stop();
-    messages.clear();
-    superChats.clear();
-    danmakuController?.clear();
-
-    // 重新设置LiveDanmaku
-    liveDanmaku = site.liveSite.getDanmaku();
-    rustDanmakuMask.reset();
-
-    // 停止播放
+    await _resetDanmaku();
+    if (_closing) return;
     await player.stop();
-
-    // 刷新信息
-    loadData();
-    HistoryService.instance.reset("${site.id}_$roomId");
+    if (_closing) return;
+    await loadData();
+    HistoryService.instance.reset('${site.id}_$roomId');
   }
 
   void copyErrorDetail() {
@@ -1252,6 +1277,14 @@ ${error?.stackTrace}''');
 
   @override
   void onClose() {
+    _closing = true;
+    ++_roomGeneration;
+    ++_danmakuGeneration;
+    subscription?.cancel();
+    liveDanmaku.onMessage = null;
+    liveDanmaku.onClose = null;
+    liveDanmaku.onReady = null;
+    danmakuBuffer.clear();
     WidgetsBinding.instance.removeObserver(this);
     scrollController.removeListener(scrollListener);
     autoExitTimer?.cancel();

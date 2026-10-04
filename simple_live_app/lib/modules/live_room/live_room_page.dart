@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:flutter/semantics.dart';
 
 import 'package:floating/floating.dart';
 import 'package:material_ui/material_ui.dart';
@@ -176,14 +177,6 @@ class LiveRoomPage extends GetView<LiveRoomController> {
           ),
           child: Row(
             children: [
-              TextButton.icon(
-                style: TextButton.styleFrom(
-                  textStyle: const TextStyle(fontSize: 14),
-                ),
-                onPressed: controller.refreshRoom,
-                icon: const Icon(Remix.refresh_line),
-                label: const Text("刷新"),
-              ),
               Obx(
                 () => controller.followed.value
                     ? TextButton.icon(
@@ -413,16 +406,6 @@ class LiveRoomPage extends GetView<LiveRoomController> {
               style: TextButton.styleFrom(
                 textStyle: const TextStyle(fontSize: 14),
               ),
-              onPressed: controller.refreshRoom,
-              icon: const Icon(Remix.refresh_line),
-              label: const Text("刷新"),
-            ),
-          ),
-          Expanded(
-            child: TextButton.icon(
-              style: TextButton.styleFrom(
-                textStyle: const TextStyle(fontSize: 14),
-              ),
               onPressed: controller.share,
               icon: const Icon(Remix.share_line),
               label: const Text("分享"),
@@ -468,20 +451,24 @@ class LiveRoomPage extends GetView<LiveRoomController> {
                   Obx(
                     () => Stack(
                       children: [
-                        ListView.separated(
-                          controller: controller.scrollController,
-                          separatorBuilder: (_, i) => Obx(
-                            () => SizedBox(
-                              // *2与原来的EdgeInsets.symmetric(vertical: )做兼容
-                              height: AppSettingsController.instance.chatTextGap.value * 2,
+                        _DanmakuReconnectPanel(
+                          onReconnect: controller.reconnectDanmaku,
+                          child: ListView.separated(
+                            controller: controller.scrollController,
+                            physics: const AlwaysScrollableScrollPhysics(parent: ClampingScrollPhysics()),
+                            separatorBuilder: (_, i) => Obx(
+                              () => SizedBox(
+                                // *2与原来的EdgeInsets.symmetric(vertical: )做兼容
+                                height: AppSettingsController.instance.chatTextGap.value * 2,
+                              ),
                             ),
+                            padding: AppStyle.edgeInsetsA12,
+                            itemCount: controller.messages.length,
+                            itemBuilder: (_, i) {
+                              var item = controller.messages[i];
+                              return buildMessageItem(item);
+                            },
                           ),
-                          padding: AppStyle.edgeInsetsA12,
-                          itemCount: controller.messages.length,
-                          itemBuilder: (_, i) {
-                            var item = controller.messages[i];
-                            return buildMessageItem(item);
-                          },
                         ),
                         Visibility(
                           visible: controller.disableAutoScroll.value,
@@ -789,14 +776,6 @@ class LiveRoomPage extends GetView<LiveRoomController> {
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
-              leading: const Icon(Icons.refresh),
-              title: const Text("刷新"),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () {
-                controller.refreshRoom();
-              },
-            ),
-            ListTile(
               leading: const Icon(Icons.play_circle_outline),
               trailing: const Icon(Icons.chevron_right),
               title: const Text("切换清晰度"),
@@ -907,4 +886,50 @@ class LiveRoomPage extends GetView<LiveRoomController> {
     }
     return "${s.toString().padLeft(2, '0')}秒";
   }
+}
+
+/// An upward pull beyond the latest message reconnects only the chat transport.
+class _DanmakuReconnectPanel extends StatefulWidget {
+  const _DanmakuReconnectPanel({required this.child, required this.onReconnect});
+  final Widget child;
+  final Future<void> Function() onReconnect;
+
+  @override
+  State<_DanmakuReconnectPanel> createState() => _DanmakuReconnectPanelState();
+}
+
+class _DanmakuReconnectPanelState extends State<_DanmakuReconnectPanel> {
+  double _pull = 0;
+  bool _pending = false;
+
+  Future<void> _reconnect() async {
+    if (_pending) return;
+    _pending = true;
+    try {
+      await widget.onReconnect();
+    } finally {
+      _pending = false;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+        key: const ValueKey('live-danmaku-panel'),
+        customSemanticsActions: {const CustomSemanticsAction(label: '重连弹幕'): _reconnect},
+        child: NotificationListener<ScrollNotification>(
+          onNotification: (notification) {
+            if (notification.depth != 0) return false;
+            if (notification is ScrollStartNotification) _pull = 0;
+            if (notification is OverscrollNotification && notification.dragDetails != null) {
+              _pull = (_pull + notification.overscroll).clamp(0.0, 120.0);
+            }
+            if (notification is ScrollEndNotification) {
+              if (_pull >= 64) _reconnect();
+              _pull = 0;
+            }
+            return false;
+          },
+          child: widget.child,
+        ),
+      );
 }
