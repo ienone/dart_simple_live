@@ -22,7 +22,6 @@ import 'package:simple_live_app/models/db/follow_user_block.dart';
 import 'package:simple_live_app/models/db/history.dart';
 import 'package:simple_live_app/modules/live_room/player/player_controller.dart';
 import 'package:simple_live_app/modules/settings/danmu_settings_page.dart';
-import 'package:simple_live_app/services/db_service.dart';
 import 'package:simple_live_app/services/follow_block_service.dart';
 import 'package:simple_live_app/services/follow_service.dart';
 import 'package:simple_live_app/services/history_service.dart';
@@ -559,32 +558,23 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       final room = await requestedSite.liveSite.getRoomDetail(roomId: requestedRoom);
       if (_closing || roomGeneration != _roomGeneration) return;
       detail.value = room;
-      if (site.id == Constant.kDouyin) {
-        // 1.6.0之前收藏的WebRid
-        // 1.6.0收藏的RoomID
-        // 1.6.0之后改回WebRid
-        if (detail.value!.roomId != roomId) {
-          var oldId = roomId;
-          rxRoomId.value = detail.value!.roomId;
-          if (followed.value) {
-            // 更新关注列表
-            DBService.instance.deleteFollow("${site.id}_$oldId");
-            DBService.instance.addFollow(
-              FollowUser(
-                id: "${site.id}_$roomId",
-                roomId: roomId,
-                siteId: site.id,
-                userName: detail.value!.userName,
-                face: detail.value!.userAvatar,
-                addTime: DateTime.now(),
-              ),
-            );
-          } else {
-            followed.value = DBService.instance.getFollowExist("${site.id}_$roomId");
-          }
+      // Douyin may canonicalize legacy IDs. Preserve the user's follow metadata.
+      if (requestedSite.id == Constant.kDouyin && room.roomId != requestedRoom) {
+        rxRoomId.value = room.roomId;
+        final oldFollow =
+            FollowService.instance.followList.firstWhereOrNull((follow) => follow.id == '${site.id}_$requestedRoom');
+        if (oldFollow != null) {
+          final record = oldFollow.toJson();
+          record['id'] = '${site.id}_${room.roomId}';
+          record['roomId'] = room.roomId;
+          final replacement = FollowUser.fromJson(record)..applySnapshot(oldFollow.toSnapshot());
+          await FollowService.instance.withFollowWrite(() async {
+            await FollowService.instance.addFollow(replacement);
+            await FollowService.instance.removeFollowUser('${requestedSite.id}_$requestedRoom');
+          });
+          if (_closing || roomGeneration != _roomGeneration) return;
         }
       }
-
       addHistory();
       followed.value = FollowService.instance.getFollowExist('${site.id}_$roomId');
       online.value = room.online;
