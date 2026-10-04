@@ -53,6 +53,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   Future<void> _playerActions = Future<void>.value();
   final playbackPaused = false.obs;
   final playbackLoading = false.obs;
+  final audioOnly = false.obs;
+  final nativeAudioOnly = false.obs;
   final danmakuReconnecting = false.obs;
   final danmakuConnected = false.obs;
   void _clearDanmakuPlayback() {
@@ -227,7 +229,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       WidgetsBinding.instance.addPostFrameCallback(
         (_) => chatScrollToBottom(),
       );
-      if (!liveStatus.value || isBackground || playbackPaused.value) {
+      if (!liveStatus.value || isBackground || playbackPaused.value || audioOnly.value) {
         return;
       }
 
@@ -426,7 +428,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
         WidgetsBinding.instance.addPostFrameCallback(
           (_) => chatScrollToBottom(),
         );
-        if (!liveStatus.value || isBackground || playbackPaused.value) {
+        if (!liveStatus.value || isBackground || playbackPaused.value || audioOnly.value) {
           return;
         }
 
@@ -588,6 +590,43 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
   Future<void> toggleLivePlayback() => playbackPaused.value ? resumeLive() : pauseLive();
 
+  Future<void> setAudioOnly(bool enabled) async {
+    if (_closing || audioOnly.value == enabled) return;
+    audioOnly.value = enabled;
+    _skipNativeAudio = false;
+    _clearDanmakuPlayback();
+    if (playbackPaused.value) return;
+    final playlist = player.state.playlist;
+    final hasMedia = playlist.index >= 0 &&
+        playlist.index < playlist.medias.length &&
+        playlist.medias[playlist.index].uri.isNotEmpty;
+    if (!playbackLoading.value &&
+        player.state.playing &&
+        hasMedia &&
+        !nativeAudioOnly.value &&
+        (!enabled || site.liveSite is! LiveAudioSource)) {
+      // A mixed stream already contains both tracks. Keep its connection and
+      // selected line when changing only the local video decoder.
+      final generation = _playbackGeneration;
+      try {
+        await _withPlayer(() async {
+          if (!_currentPlayback(generation)) return;
+          await player.setVideoTrack(audioOnly.value ? VideoTrack.no() : VideoTrack.auto());
+          if (!_currentPlayback(generation)) return;
+          await setScreenAwake(player.state.playing && keepScreenAwakeDuringPlayback);
+        });
+        return;
+      } catch (error) {
+        if (!_currentPlayback(generation) || audioOnly.value != enabled) return;
+        Log.w('Audio mode switch failed: ${error.runtimeType}');
+        // Reopening applies the desired mode again if the current decoder
+        // cannot switch tracks in place.
+      }
+    }
+    final generation = ++_playbackGeneration;
+    await _resolvePlayback(generation, refreshDetail: true);
+  }
+
   Future<void> getPlayQualites() => _resolvePlayback(++_playbackGeneration, resetQuality: true);
 
   Future<int> getQualityLevel() async {
@@ -614,6 +653,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     errorMsg.value = '';
     final requestedSite = site;
     final requestedRoom = roomId;
+    final onlyAudio = audioOnly.value;
     try {
       await _withPlayer(() async {
         if (_currentPlayback(generation)) await player.stop();
@@ -648,6 +688,23 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       final quality = qualities[qualityIndex];
       var source = await requestedSite.liveSite.getPlayUrls(detail: room, quality: quality);
       if (!_currentPlayback(generation)) return;
+      var nativeAudio = false;
+      if (onlyAudio && !_skipNativeAudio && requestedSite.liveSite is LiveAudioSource) {
+        try {
+          final audio = await (requestedSite.liveSite as LiveAudioSource)
+              .getAudioOnlyUrls(detail: room, quality: quality, videoUrls: source);
+          if (!_currentPlayback(generation)) return;
+          if (audio != null && audio.urls.isNotEmpty) {
+            source = audio;
+            nativeAudio = true;
+          }
+        } catch (error) {
+          // This capability is optional: keep the already resolved ordinary
+          // source, and still disable its video decoder in audio-only mode.
+          Log.w('Native audio lookup unavailable: ${error.runtimeType}');
+        }
+        if (!_currentPlayback(generation)) return;
+      }
       if (source.urls.isEmpty) throw StateError('No live URLs');
       qualites.assignAll(qualities);
       currentQuality = qualityIndex;
@@ -656,6 +713,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       playHeaders = source.headers;
       currentLineIndex = 0;
       currentLineInfo.value = '线路1';
+      nativeAudioOnly.value = nativeAudio;
       mediaErrorRetryCount = 0;
       await _openCurrentSource(generation);
     } catch (e) {
@@ -678,11 +736,18 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
         if (!_currentPlayback(generation) || playUrls.isEmpty) return;
         await initializePlayer();
         if (!_currentPlayback(generation)) return;
+        // mpv vid=no stops decoding as well as rendering. A muxed fallback still
+        // downloads the original stream; no bandwidth saving is promised.
+        await player.setVideoTrack(audioOnly.value ? VideoTrack.no() : VideoTrack.auto());
+        if (!_currentPlayback(generation)) return;
         var url = playUrls[currentLineIndex];
         if (AppSettingsController.instance.playerForceHttps.value) {
           url = url.replaceFirst('http://', 'https://');
         }
         await player.open(Media(url, httpHeaders: playHeaders));
+        if (_currentPlayback(generation)) {
+          await player.setVideoTrack(audioOnly.value ? VideoTrack.no() : VideoTrack.auto());
+        }
         // A stop/resume or room change may arrive while the native open is pending.
         if (!_currentPlayback(generation)) await player.stop();
       });
@@ -711,6 +776,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
   int mediaErrorRetryCount = 0;
   int? _retryingGeneration;
+  bool _skipNativeAudio = false;
 
   Future<void> _retryLiveStream() async {
     if (_closing ||
@@ -723,7 +789,10 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     final generation = _playbackGeneration;
     _retryingGeneration = generation;
     try {
-      if (currentLineIndex + 1 < playUrls.length) {
+      if (nativeAudioOnly.value && !_skipNativeAudio) {
+        _skipNativeAudio = true;
+        await _resolvePlayback(generation, refreshDetail: true);
+      } else if (currentLineIndex + 1 < playUrls.length) {
         currentLineIndex++;
         currentLineInfo.value = '线路${currentLineIndex + 1}';
         await _openCurrentSource(generation);
@@ -1308,6 +1377,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     playUrls.clear();
     qualites.clear();
     playbackPaused.value = false;
+    nativeAudioOnly.value = false;
+    _skipNativeAudio = false;
     HistoryService.instance.reset('${site.id}_$roomId');
     await loadData();
   }
@@ -1328,7 +1399,7 @@ ${error?.stackTrace}''');
     if (state == AppLifecycleState.paused) {
       danmakuController?.clear();
       isBackground = true;
-      if (AppSettingsController.instance.playerAutoPause.value && !playbackPaused.value) {
+      if (!audioOnly.value && AppSettingsController.instance.playerAutoPause.value && !playbackPaused.value) {
         unawaited(pauseLive());
         _resumeAfterBackground = true;
       }
@@ -1340,7 +1411,7 @@ ${error?.stackTrace}''');
   }
 
   @override
-  bool get keepScreenAwakeDuringPlayback => !isBackground;
+  bool get keepScreenAwakeDuringPlayback => !audioOnly.value && !isBackground;
 
   @override
   Future<void> beforePlayerDispose() => _playerActions;

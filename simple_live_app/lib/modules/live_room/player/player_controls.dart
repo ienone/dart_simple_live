@@ -54,7 +54,9 @@ Widget buildFullControls(
   return buildDragToMoveArea(
     child: Stack(
       children: [
-        Container(),
+        Obx(() => controller.audioOnly.value
+            ? const Positioned.fill(child: ColoredBox(color: Colors.black))
+            : const SizedBox.shrink()),
         buildDanmuView(videoState, controller),
 
         Center(
@@ -230,6 +232,7 @@ Widget buildFullControls(
               child: Row(
                 children: [
                   buildPlaybackToggle(controller),
+                  buildAudioOnlyToggle(controller),
                   IconButton(
                     tooltip: '刷新直播间',
                     onPressed: () {
@@ -419,7 +422,9 @@ Widget buildControls(
   GlobalKey volumeButtonKey = GlobalKey();
   return Stack(
     children: [
-      Container(),
+      Obx(() => controller.audioOnly.value
+          ? const Positioned.fill(child: ColoredBox(color: Colors.black))
+          : const SizedBox.shrink()),
       buildDanmuView(videoState, controller),
       // 中间
       Center(
@@ -470,6 +475,7 @@ Widget buildControls(
             child: Row(
               children: [
                 buildPlaybackToggle(controller),
+                buildAudioOnlyToggle(controller),
                 IconButton(
                   tooltip: '刷新直播间',
                   onPressed: () {
@@ -628,7 +634,7 @@ Widget buildDanmuView(VideoState videoState, LiveRoomController controller) {
     bottom: padding.bottom,
     child: Obx(
       () => Offstage(
-        offstage: !controller.showDanmakuState.value || controller.playbackPaused.value,
+        offstage: !controller.showDanmakuState.value || controller.audioOnly.value || controller.playbackPaused.value,
         child: Padding(
           padding: controller.fullScreenState.value
               ? EdgeInsets.only(
@@ -877,4 +883,12 @@ Widget buildPlaybackToggle(LiveRoomController controller) => Obx(() => IconButto
       tooltip: controller.playbackPaused.value ? '播放' : '暂停',
       onPressed: controller.toggleLivePlayback,
       icon: Icon(controller.playbackPaused.value ? Icons.play_arrow : Icons.pause, color: Colors.white),
+    ));
+
+Widget buildAudioOnlyToggle(LiveRoomController controller) => Obx(() => IconButton(
+      key: const ValueKey('live-audio-only-toggle'),
+      tooltip: controller.audioOnly.value ? '恢复画面' : '只听音频',
+      onPressed: () => controller.setAudioOnly(!controller.audioOnly.value),
+      icon: Icon(controller.audioOnly.value ? Icons.headphones : Icons.headphones_outlined,
+          color: controller.audioOnly.value ? Theme.of(Get.context!).colorScheme.primary : Colors.white),
     ));

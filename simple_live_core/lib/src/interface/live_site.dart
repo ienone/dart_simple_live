@@ -93,3 +93,13 @@ class LiveSite {
   }
 
 }
+
+/// Optional capability: only return sources explicitly declared audio-only by
+/// the provider. Returning null preserves the player's decoder-disabled fallback.
+abstract interface class LiveAudioSource {
+  Future<LivePlayUrl?> getAudioOnlyUrls({
+    required LiveRoomDetail detail,
+    required LivePlayQuality quality,
+    required LivePlayUrl videoUrls,
+  });
+}
