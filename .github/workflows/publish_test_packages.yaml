@@ -1,0 +1,34 @@
+name: Publish completed test packages
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Successful test-Slive packages run ID
+        required: true
+permissions:
+  contents: write
+  actions: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify and publish the completed build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]]
+          gh api "repos/$GH_REPO/actions/runs/$RUN_ID" > run.json
+          jq -e '.conclusion == "success" and .path == ".github/workflows/publish_app_test.yaml"' run.json
+          sha=$(jq -r .head_sha run.json)
+          gh run download "$RUN_ID" --dir dist
+          for platform in android-all ios-arm64 macos-universal windows-x64 linux-x64 linux-arm64; do
+            test -d "dist/test-Slive-$platform"
+          done
+          mapfile -d '' packages < <(find dist -type f -name 'test-Slive-*' -print0)
+          test "${#packages[@]}" -ge 10
+          gh release create "test-$RUN_ID" "${packages[@]}" --target "$sha" --prerelease \
+            --title "test-Slive ($RUN_ID)" \
+            --notes '独立测试版，可与正式版共存。Android 为测试签名；iOS IPA 未签名，需自行签名安装；macOS 未公证，Windows 未签名。构建来源见本版本对应的 Actions run。'
