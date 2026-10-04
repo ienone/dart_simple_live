@@ -255,8 +255,8 @@ class LiveRoomPage extends GetView<LiveRoomController> {
         Video(
           key: controller.globalPlayerKey,
           controller: controller.videoController,
-          pauseUponEnteringBackgroundMode: AppSettingsController.instance.playerAutoPause.value,
-          resumeUponEnteringForegroundMode: AppSettingsController.instance.playerAutoPause.value,
+          pauseUponEnteringBackgroundMode: false,
+          resumeUponEnteringForegroundMode: false,
           controls: (state) {
             return playerControls(state, controller);
           },
