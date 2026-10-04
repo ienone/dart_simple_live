@@ -17,8 +17,10 @@ Checked items mean the behavior is implemented. Runtime acceptance and remaining
 
 - [x] **7 — Pinning and manual order:** persist a user's order/pins; expose concise actions; allow their priority relative to live status to be configured; retain ordinary sorting and cross-device compatibility.
 - [x] **6 — Multiple tags and batch tagging:** one follow can belong to multiple tags; tag filtering remains correct; select several follows and apply/remove tags together; migrate old single-tag data without loss; round-trip LAN/WebDAV/export/import data.
+  - macOS follow-up: multi-select now supports drag ranges, shrinking a range, dragging to deselect and edge auto-scroll in compact/card layouts. Native E2E passed with persisted follows, normal clicks, wheel and trackpad scrolling.
 - [x] **5 — Incremental live status:** apply each valid status result as it arrives, reorder the visible list without waiting for the batch, and handle cancellation/repeated refresh/deleted follows/failed requests safely.
 - [x] **1 — Danmaku reconnect:** upward gesture on the danmaku panel reconnects only danmaku and clears stale queued messages; retain full player refresh and remove the redundant out-of-player refresh control.
+  - macOS follow-up: added pull/release/connecting/result feedback with desktop dragging, disabled automatic loading, and wait for WebSocket readiness. Real macOS integration passed short-pull cancellation, release-only single reconnect, visible states and unchanged video source.
 - [x] **2 — Soft pause:** player and system controls stop live playback on pause; resume obtains a current live stream rather than playing old buffered content; room changes and failures leave consistent state.
 - [x] **3 — Audio-only:** provide a minimal mode control, disable video decoding/rendering, prefer verified native audio streams where available, and preserve playback across mode changes and background transitions.
 - [x] **4 — System media and queue:** a shared session exposes room metadata, play/pause and previous/next; real platform adapters cover Android/Apple, Windows and Linux; the queue includes live followed rooms, supports all/tags and configured ordering, and handles start/end transitions.
@@ -51,14 +53,26 @@ The 2026-10-04 Huya ordinary-room follow-up distinguishes successful audio proxy
 
 Following the owner's `pure_live` reference, Huya now switches a playing mixed source between video and listening without reconnecting. It keeps the current URL and line, serializes rapid mode changes, updates screen-awake behavior, and preserves soft pause/live-edge resume. Native-audio providers still switch to their audio source. `pure_live` does not supply a separate ordinary-room Huya audio URL.
 
-Necessary adjacent fixes include Linux startup/quality selection without NetworkManager's system bus, safe tag-dialog submission, status-refresh slot wakeups after cancellation, old JSON watch-duration migration, and removal of the floating debug-log button/banner. No post-implementation unit tests were added; obsolete counter/Rust demo test templates were removed in favor of the actual application E2E flow.
+Necessary adjacent fixes include Linux startup/quality selection without NetworkManager's system bus, safe tag-dialog submission, status-refresh slot wakeups after cancellation, old JSON watch-duration migration, and removal of the floating debug-log button/banner. Obsolete counter/Rust demo test templates were removed. The issue-specific test harness was removed at the owner's request after real-application validation.
 
-## Reproducing validation
+## Runtime acceptance
 
-```sh
-source /workspace/toolchains/activate.sh
-cd /workspace/dart_simple_live
-scripts/e2e/issue-146.sh /workspace/artifacts/issue-146-<new-run-name>
-```
+### macOS existing-profile acceptance (2026-10-04)
 
-See `docs/testing/issue-146-e2e.md` for prerequisites and failure cases. Runs retain scenario results and debugging logs; full source/hash manifests are optional (`SLIVE_E2E_SEAL_ARTIFACTS=1`). External image/CDN/WebSocket restrictions and unavailable devices remain explicit blocked/unverified results.
+Real application checks passed for multi-tag editing/filtering/batch changes,
+manual order/pinning, native soft pause/resume, Huya decoder-only listening and
+rapid mode changes, and live queue filtering/next/previous. Fixed playback/audio
+buttons not resetting control auto-hide and desktop calls to unregistered mobile
+brightness plugins. One full rerun timed out decoding video after Previous;
+a focused queue rerun passed, so the intermittent timeout remains unexplained.
+No physical OS media-button or cross-device sync claim. Original six Hive files
+were restored and matched the pre-test backup hashes before normal debug launch.
+
+## Side-by-side test packages
+
+`publish_app_test.yaml` builds tags named `test-*` into a prerelease with Android,
+iOS, macOS, Windows and Linux packages. CI applies `scripts/prepare_test_build.py`
+to its disposable checkout; formal builds retain their existing identity.
+Android uses a cached test key, iOS is unsigned, macOS is ad-hoc signed and
+Windows is unsigned. Test application IDs and desktop data directories are
+separate from the formal app. Firebase is disabled in the test packages.

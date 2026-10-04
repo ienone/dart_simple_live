@@ -1,7 +1,7 @@
 # Feature branches and upstream PRs
 
 `ienone/dart_simple_live:master` is the integration branch: it contains all seven
-issue #146 features, the real-application tests, and fork-specific working notes.
+issue #146 features and fork-specific working notes.
 Keep it usable for daily development. Feature branches preserve reviewable work;
 do not use the integration branch as the head of a single-feature upstream PR.
 
@@ -23,7 +23,7 @@ not seven branches that can all be submitted independently at the same time.
 The media branch merges the two prerequisite stacks before its own feature commit.
 Subsequent integration commits adapt Douyin room-ID migration to the new follow
 model, initialize Flutter before platform calls, and remove debug overlays. These
-integration fixes and cross-feature E2E tests remain on `master`.
+integration fixes remain on `master`.
 
 ## Continuing development
 
@@ -71,5 +71,5 @@ upstream PRs given the maintainer's response in issue #146.
 The split preserves the previously tested integrated product code. Every feature
 tip was checked with `dart analyze --format machine lib` in the real app checkout
 (no errors; existing deprecation/unused warnings remain). This does not replace
-testing a later port to `dev`. Cross-feature real-app commands are documented in
-[the E2E guide](testing/issue-146-e2e.md).
+testing a later port to `dev`. Historical runtime acceptance is recorded in
+[`GOALS.md`](../GOALS.md).

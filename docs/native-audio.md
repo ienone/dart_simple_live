@@ -36,11 +36,6 @@ and ASMR playback can disable the video track. We retain decoder disabling durin
 manual listening and borrow the continuous-connection behavior. This saves video
 decoding work, but does not remove video bytes from Huya's network stream.
 
-Run the focused real-app check with
-`SLIVE_E2E_PHASES=audio-switch scripts/e2e/issue-146.sh /tmp/slive-audio-switch-<run>`.
-It covers Huya mode changes, rapid taps, pause/resume and desktop window hiding,
-plus Bilibili native audio and video restoration.
-
 2026-10-04: the focused Linux run passed all three scenarios (startup, Huya,
 Bilibili), using real live streams, the native player and PulseAudio output.
 
@@ -81,7 +76,6 @@ and inspect both stream types and packet counts. Native application checks must
 also show progressing playback and real audio output, then successfully restore
 video. Download-byte comparisons are samples, not fixed savings promises.
 
-See [the real E2E workflow](testing/issue-146-e2e.md) for the full application run.
 No synthetic stream, mocked provider response or new unit test is used to certify
 this feature. Signed stream URLs and private cookies are excluded from shared
 artifacts; fresh URLs are resolved on each repeat run.
