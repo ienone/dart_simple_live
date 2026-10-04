@@ -74,10 +74,20 @@ class FollowUserController extends BasePageController<FollowUser> {
   }
 
   @override
-  Future refreshData() async {
-    await FollowService.instance.loadData();
-    updateTagList();
-    super.refreshData();
+  Future<void> refreshData() async {
+    pageLoadding.value = true;
+    pageError.value = false;
+    try {
+      await FollowService.instance.loadData();
+      updateTagList();
+      filterData();
+      currentPage = 2;
+      canLoadMore.value = false;
+    } catch (error) {
+      handleError(error, showPageError: list.isEmpty);
+    } finally {
+      pageLoadding.value = false;
+    }
   }
 
   @override

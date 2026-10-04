@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:collection';
 import 'dart:io';
 
 import 'package:collection/collection.dart';
@@ -10,7 +11,6 @@ import 'package:fractional_indexing_dart/fractional_indexing_dart.dart';
 import 'package:get/get.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:pinyin/pinyin.dart';
-import 'package:pool/pool.dart';
 import 'package:simple_live_app/app/constant.dart';
 import 'package:simple_live_app/app/controller/app_settings_controller.dart';
 import 'package:simple_live_app/app/event_bus.dart';
@@ -71,9 +71,12 @@ class FollowService extends GetxService {
 
   int _refreshCycle = 0;
 
+  int _statusEpoch = 0;
   bool _closed = false;
-  int _totalToUpdate = 0;
-  bool _snap = false;
+  final Map<String, int> _statusRequestIds = {};
+
+  int _activeStatusRequests = 0;
+  final Queue<Completer<void>> _statusWaiters = Queue<Completer<void>>();
 
   Future<void>? _initialization;
   Future<void> get ready => _initialization ??= _initialize();
@@ -314,7 +317,9 @@ class FollowService extends GetxService {
   Future<void> removeFollowUser(String id) => _lock.synchronized(() async {
         final follow = followList.firstWhereOrNull((item) => item.id == id);
         if (follow == null) return;
+        _statusRequestIds[id] = (_statusRequestIds[id] ?? 0) + 1;
         follow.deleted = true;
+        follow.refreshingStatus.value = false;
         follow.updateTime = DateTime.now().millisecondsSinceEpoch ~/ 1000;
         followList.removeWhere((item) => item.id == id);
         dormantFollowList.removeWhere((item) => item.id == id);
@@ -393,7 +398,6 @@ class FollowService extends GetxService {
               item.applySnapshot(resItem);
             }
           }
-          _snap = true;
           Log.i("FollowService: follow-snapshot has recovered, expireAt: ${followSnapshot.expireAt}");
         }
         followList.assignAll(list);
@@ -425,26 +429,21 @@ class FollowService extends GetxService {
       });
 
   Future<void> loadData({bool updateStatus = true, int? cycle}) async {
-    // snapshot 恢复跳过第一次状态更新
-    if (_snap) {
-      _snap = false;
-      return;
-    }
     if (updateStatus) {
-      startUpdateStatus(cycle: cycle);
+      await startUpdateStatus(cycle: cycle);
     } else {
-      _updatedListController.add(0);
+      filterData();
     }
   }
 
-  void multiRoundPriority() {
+  List<FollowUser> multiRoundPriority() {
     final historyList = DBService.instance.getHistories();
     final Map<String, int> historyRankMap = {for (var i = 0; i < historyList.length; i++) historyList[i].id: i};
     final int maxRank = historyList.isNotEmpty ? historyList.length : 1;
 
     Duration maxDuration = const Duration();
     for (var user in followList) {
-      final duration = user.watchDuration!.toDuration();
+      final duration = Duration(seconds: user.watchDurationSec);
       if (duration > maxDuration) {
         maxDuration = duration;
       }
@@ -456,7 +455,8 @@ class FollowService extends GetxService {
 
     // 简单线性加权组合算法，目前认定观看时长和最近观看时间权重一致
     // 如果用户历史行为序列非常长：可替换为时间衰减 + 观看时长加权
-    followList.sort((a, b) {
+    final ranked = List<FollowUser>.of(followList);
+    ranked.sort((a, b) {
       // 静态权重
       const double wDuration = 0.5;
       const double wRecency = 0.5;
@@ -481,11 +481,13 @@ class FollowService extends GetxService {
           (b.liveStatus.value == 2 ? wOnline : wOffline) *
           wDormantB;
 
-      return scoreB.compareTo(scoreA);
+      final score = scoreB.compareTo(scoreA);
+      return score != 0 ? score : a.id.compareTo(b.id);
     });
+    return ranked;
   }
 
-  void startUpdateStatus({int? cycle}) async {
+  Future<void> startUpdateStatus({int? cycle}) async {
     List<FollowUser> usersToUpdate;
     final totalUsers = followList.length;
     final douyinCount = followList.where((x) => x.siteId == 'douyin').length;
@@ -496,9 +498,9 @@ class FollowService extends GetxService {
       final topNCount = (totalUsers * 0.2).round(); // Top 20%
       final bottomNCount = (totalUsers * 0.2).round(); // Bottom 20%
       final middlePartEndIndex = totalUsers - bottomNCount;
-      multiRoundPriority();
-      final topNUsers = followList.sublist(0, topNCount);
-      final middleUsers = followList.sublist(topNCount, middlePartEndIndex);
+      final ranked = multiRoundPriority();
+      final topNUsers = ranked.sublist(0, topNCount);
+      final middleUsers = ranked.sublist(topNCount, middlePartEndIndex);
       if (cycle == 0) {
         usersToUpdate = topNUsers;
         CoreLog.i("Update Follow: Cycle 0, updating top ${usersToUpdate.length}/$totalUsers users.");
@@ -512,63 +514,123 @@ class FollowService extends GetxService {
         CoreLog.i("Update Follow: List <= 100, updating all ${usersToUpdate.length} users.");
       }
     }
-    _totalToUpdate = usersToUpdate.length;
+    if (_closed) return;
+    cancelStatusUpdate();
+    final epoch = _statusEpoch;
     updatedCount = 0;
-    updating.value = true;
-
-    if (_totalToUpdate == 0) {
-      updating.value = false;
+    updating.value = usersToUpdate.isNotEmpty;
+    if (usersToUpdate.isEmpty) {
       filterData();
       return;
     }
-
-    var threadCount = AppSettingsController.instance.updateFollowThreadCount.value;
-
-    var pool = Pool(threadCount);
-    var tasks = <Future>[];
-
-    for (var user in usersToUpdate) {
-      tasks.add(pool.withResource(() => updateLiveInformation(user)));
+    for (final item in usersToUpdate) {
+      item.refreshingStatus.value = true;
     }
-    await Future.wait(tasks);
-    await pool.close();
-
-    // 增量检查：自动解冻 lastWatchTime >= cutoff 的用户
-    final threshold = AppSettingsController.instance.dormancyThreshold.value;
-    if (threshold > 0 && dormantFollowList.isNotEmpty) {
-      final cutoff = DateTime.now().subtract(Duration(days: threshold)).millisecondsSinceEpoch ~/ 1000;
-      dormantFollowList.removeWhere((u) => u.lastWatchTime != null && u.lastWatchTime! >= cutoff);
+    try {
+      await Future.wait(usersToUpdate.map((user) => updateLiveInformation(user, epoch: epoch)));
+    } finally {
+      if (!_closed && epoch == _statusEpoch) {
+        for (final item in usersToUpdate) {
+          item.refreshingStatus.value = false;
+        }
+        updating.value = false;
+        _buildDormantList();
+        filterData();
+      }
     }
-
-    // frequency of snapshot-saving and expireAt calculation depend on user-setting: auto-update
+    if (_closed || epoch != _statusEpoch) return;
     final minutes = AppSettingsController.instance.autoUpdateFollowDuration.value;
     final expireAt = DateTime.now().add(Duration(minutes: minutes)).microsecondsSinceEpoch;
-    AppSettingsController.instance.setFollowSnapshot(
+    await AppSettingsController.instance.setFollowSnapshot(
       FollowSnapshot(
         expireAt: expireAt,
-        followSnapshotItems: followList.map((e) => e.toSnapshot()).toList(),
+        followSnapshotItems: followList
+            .where((item) => !item.statusRefreshFailed.value && item.liveStatus.value != 0)
+            .map((item) => item.toSnapshot())
+            .toList(),
       ),
     );
-    Log.i("FollowService: follow-snapshot has saved, time: ${DateTime.now()}");
   }
 
-  Future updateLiveInformation(FollowUser item) async {
+  /// In-flight HTTP operations may finish, but queued work and late results are discarded.
+  void cancelStatusUpdate() {
+    _statusEpoch++;
+    while (_statusWaiters.isNotEmpty) {
+      _statusWaiters.removeFirst().complete();
+    }
+    updating.value = false;
+    for (final item in followList) {
+      item.refreshingStatus.value = false;
+    }
+  }
+
+  bool _isCurrentStatusRequest(FollowUser item, int epoch) =>
+      !_closed &&
+      epoch == _statusEpoch &&
+      !item.deleted &&
+      identical(followList.firstWhereOrNull((follow) => follow.id == item.id), item);
+
+  /// Publish a successful room lookup made by playback without allowing an
+  /// earlier background refresh to overwrite that newer observation.
+  void applyKnownLiveStatus(String id, bool live) {
+    final follow = followList.firstWhereOrNull((item) => item.id == id && !item.deleted);
+    if (follow == null || _closed) return;
+    _statusRequestIds[id] = (_statusRequestIds[id] ?? 0) + 1;
+    follow.liveStatus.value = live ? 2 : 1;
+    follow.statusRefreshFailed.value = false;
+    follow.refreshingStatus.value = false;
+    if (!live) follow.cover.value = '';
+    filterData();
+  }
+
+  /// One concurrency limit for every refresh generation. A UI timeout does not
+  /// release the slot until the underlying API operation has actually finished.
+  Future<T?> _withStatusSlot<T>(bool Function() isCurrent, Future<T> Function() operation) async {
+    while (_activeStatusRequests >= AppSettingsController.instance.updateFollowThreadCount.value.clamp(1, 16)) {
+      if (!isCurrent()) return null;
+      final waiter = Completer<void>();
+      _statusWaiters.add(waiter);
+      await waiter.future;
+    }
+    if (!isCurrent()) return null;
+    _activeStatusRequests++;
+    final request = Future<T>.sync(operation).whenComplete(() {
+      _activeStatusRequests--;
+      // A deleted/replaced follow may own the first waiter. Wake the batch so
+      // its stale request cannot consume the only notification of a free slot.
+      while (_statusWaiters.isNotEmpty) {
+        _statusWaiters.removeFirst().complete();
+      }
+    });
+    return request.timeout(const Duration(seconds: 30));
+  }
+
+  Future<void> updateLiveInformation(FollowUser item, {int? epoch}) async {
+    final requestEpoch = epoch ?? _statusEpoch;
+    if (!_isCurrentStatusRequest(item, requestEpoch)) return;
+    final requestId = (_statusRequestIds[item.id] ?? 0) + 1;
+    _statusRequestIds[item.id] = requestId;
+    bool isCurrent() => _isCurrentStatusRequest(item, requestEpoch) && _statusRequestIds[item.id] == requestId;
+    item.refreshingStatus.value = true;
     try {
-      var site = Sites.allSites[item.siteId]!;
-      LiveRoomDetail detail = await site.liveSite.getRoomDetail(roomId: item.roomId);
+      final site = Sites.allSites[item.siteId];
+      if (site == null) throw StateError('Unsupported live site: ${item.siteId}');
+      final detail = await _withStatusSlot(isCurrent, () => site.liveSite.getRoomDetail(roomId: item.roomId));
+      if (detail == null || !isCurrent()) return;
       item.liveStatus.value = detail.status ? 2 : 1;
-      item.cover.value = detail.status ? detail.cover : "";
+      item.cover.value = detail.status ? detail.cover : '';
       item.title.value = detail.title;
       item.online.value = detail.online;
-    } catch (e) {
-      Log.logPrint(e);
+      item.statusRefreshFailed.value = false;
+    } catch (error) {
+      if (!isCurrent()) return;
+      item.statusRefreshFailed.value = true;
+      Log.i('Follow status lookup failed for ${item.id}: ${error.runtimeType}');
     } finally {
-      await _lock.synchronized(() {
-        updatedCount++;
-      });
-      if (updatedCount >= _totalToUpdate) {
+      if (isCurrent()) {
+        item.refreshingStatus.value = false;
+        if (epoch != null) updatedCount++;
         filterData();
-        updating.value = false;
       }
     }
   }
@@ -801,6 +863,7 @@ class FollowService extends GetxService {
 
   /// Repair legacy records and imported indexes, then publish one consistent list.
   Future<void> followUserAllDataCheck() => withFollowWrite(() async {
+        cancelStatusUpdate();
         final previous = {for (final follow in followList) follow.id: follow};
         final follows = DBService.instance.getFollowList();
         await _ensureManualOrder(follows);
@@ -812,6 +875,7 @@ class FollowService extends GetxService {
           final old = previous[follow.id];
           if (old != null && !identical(old, follow)) {
             follow.applySnapshot(old.toSnapshot());
+            follow.statusRefreshFailed.value = old.statusRefreshFailed.value;
           }
         }
         await DBService.instance.followBox.putAll({for (final follow in follows) follow.id: follow});
@@ -942,6 +1006,7 @@ class FollowService extends GetxService {
   @override
   void onClose() {
     _closed = true;
+    cancelStatusUpdate();
     updateTimer?.cancel();
     subscription?.cancel();
     _updatedListController.close();

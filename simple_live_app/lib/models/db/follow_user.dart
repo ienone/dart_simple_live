@@ -120,6 +120,10 @@ class FollowUser implements Mappable {
 
   Rx<int> online = 0.obs;
 
+  /// A failed lookup keeps the last known state; it is never an offline result.
+  final statusRefreshFailed = false.obs;
+  final refreshingStatus = false.obs;
+
   factory FollowUser.fromJson(Map<String, dynamic> json, {FollowUser? existing}) {
     final int watchSeconds;
     if (json.containsKey('watchDurationSec')) {
@@ -152,6 +156,7 @@ class FollowUser implements Mappable {
     );
     if (existing != null) {
       follow.applySnapshot(existing.toSnapshot());
+      follow.statusRefreshFailed.value = existing.statusRefreshFailed.value;
     }
     return follow;
   }

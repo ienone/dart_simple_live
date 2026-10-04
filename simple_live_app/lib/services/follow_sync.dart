@@ -34,6 +34,7 @@ Future<void> importSyncedFollows(
     final mergedTags = definitions == null
         ? null
         : mergeSyncedTagDefinitions(DBService.instance.getAllFollowTagList(), definitions, overlay: overlay);
+    FollowService.instance.cancelStatusUpdate();
     if (overlay) {
       await box.deleteAll(box.keys.where((key) => !incoming.containsKey(key)).toList());
     }
@@ -53,6 +54,7 @@ Future<void> importSyncedTags(dynamic records, {bool overlay = false}) {
       parseSyncedTagDefinitions(records),
       overlay: overlay,
     );
+    FollowService.instance.cancelStatusUpdate();
     await DBService.instance.tagBox.clear();
     await DBService.instance.tagBox.putAll({for (final tag in tags) tag.id: tag});
     // Membership is derived from the follows; an old peer's single-tag index
