@@ -6,6 +6,7 @@ import 'package:simple_live_app/app/sites.dart';
 import 'package:simple_live_app/app/utils/extensions/duration_2_str_utils.dart';
 import 'package:simple_live_app/models/db/follow_user.dart';
 import 'package:simple_live_app/widgets/net_image.dart';
+import 'package:simple_live_app/widgets/follow_tag_badges.dart';
 import 'dart:ui' as ui;
 
 class FollowUserItem extends StatelessWidget {
@@ -14,6 +15,7 @@ class FollowUserItem extends StatelessWidget {
   final Function()? onTap;
   final Function()? onLongPress;
   final bool playing;
+  final String? activeTag;
   final bool selectionMode;
   final bool selected;
   final VoidCallback? onSelected;
@@ -23,6 +25,7 @@ class FollowUserItem extends StatelessWidget {
     this.onTap,
     this.onLongPress,
     this.playing = false,
+    this.activeTag,
     this.selectionMode = false,
     this.selected = false,
     this.onSelected,
@@ -32,6 +35,9 @@ class FollowUserItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     var site = Sites.allSites[item.siteId]!;
+    final metadataStyle = Theme.of(context).textTheme.bodySmall?.copyWith(
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        );
     return ListTile(
       contentPadding: AppStyle.edgeInsetsL16.copyWith(right: 4),
       selected: selected,
@@ -103,31 +109,17 @@ class FollowUserItem extends StatelessWidget {
           AppStyle.hGap4,
           Text(
             site.name,
-            style: const TextStyle(
-              fontSize: 12,
-              color: Colors.grey,
-            ),
+            style: metadataStyle,
           ),
           AppStyle.hGap4,
           Text(
             Duration(seconds: item.watchDurationSec).toHMSString(),
-            style: const TextStyle(
-              fontSize: 12,
-              color: Colors.grey,
-            ),
+            style: metadataStyle,
           ),
-          AppStyle.hGap4,
-          Flexible(
-            child: Text(
-              item.tags.join(' · '),
-              style: const TextStyle(
-                fontSize: 12,
-                color: Colors.grey,
-              ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
+          if (item.tags.isNotEmpty) ...[
+            const SizedBox(width: 8),
+            Expanded(child: FollowTagBadges(tags: item.tags, activeTag: activeTag)),
+          ],
         ],
       ),
       trailing: selectionMode

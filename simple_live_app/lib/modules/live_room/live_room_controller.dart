@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:canvas_danmaku/canvas_danmaku.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
@@ -52,6 +53,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   bool _resumeAfterBackground = false;
   Future<void> _playerActions = Future<void>.value();
   final playbackPaused = false.obs;
+  final pausedFrame = Rxn<Uint8List>();
   final playbackLoading = false.obs;
   final audioOnly = false.obs;
   final nativeAudioOnly = false.obs;
@@ -366,21 +368,27 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     await previous.stop();
   }
 
-  Future<void> reconnectDanmaku() async {
-    if (_closing || danmakuReconnecting.value || detail.value == null) return;
+  Future<bool> reconnectDanmaku() async {
+    if (_closing || danmakuReconnecting.value || detail.value == null) return false;
     danmakuReconnecting.value = true;
     final roomGeneration = _roomGeneration;
     try {
       await _resetDanmaku();
-      if (_closing || roomGeneration != _roomGeneration) return;
+      if (_closing || roomGeneration != _roomGeneration) return false;
       // Refresh authentication/connection data, leaving video and its URL intact.
       final fresh = await site.liveSite.getRoomDetail(roomId: roomId);
-      if (_closing || roomGeneration != _roomGeneration) return;
+      if (_closing || roomGeneration != _roomGeneration) return false;
       await _connectDanmaku(fresh);
+      // start() initiates the socket asynchronously; keep feedback until ready.
+      if (!danmakuConnected.value) {
+        await danmakuConnected.stream.firstWhere((connected) => connected).timeout(const Duration(seconds: 20));
+      }
+      return !_closing && roomGeneration == _roomGeneration && danmakuConnected.value;
     } catch (e) {
       if (!_closing && roomGeneration == _roomGeneration) {
         SmartDialog.showToast('弹幕重连失败');
       }
+      return false;
     } finally {
       if (!_closing) danmakuReconnecting.value = false;
     }
@@ -406,7 +414,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   void chatScrollToBottom() {
     if (scrollController.hasClients) {
       // 如果手动上拉过，就不自动滚动到底部
-      if (disableAutoScroll.value) {
+      if (disableAutoScroll.value || scrollController.position.isScrollingNotifier.value) {
         return;
       }
       scrollController.jumpTo(scrollController.position.maxScrollExtent);
@@ -607,7 +615,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   }
 
   Future<void> pauseLive() async {
-    if (_closing) return;
+    if (_closing || playbackPaused.value) return;
     if (Get.isRegistered<MediaSessionService>()) {
       MediaSessionService.instance.cancelPendingAdvance(this);
     }
@@ -617,6 +625,16 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     _resumeAfterBackground = false;
     _clearDanmakuPlayback();
     await _withPlayer(() async {
+      if (_closing || generation != _playbackGeneration) return;
+      await player.pause();
+      if (!audioOnly.value && (player.state.width ?? 0) > 0) {
+        try {
+          final frame = await player.screenshot(format: 'image/png');
+          if (!_closing && generation == _playbackGeneration) pausedFrame.value = frame;
+        } catch (error) {
+          Log.w('Paused frame capture failed: ${error.runtimeType}');
+        }
+      }
       if (!_closing && generation == _playbackGeneration) await player.stop();
     });
     if (generation == _playbackGeneration) await setScreenAwake(false);
@@ -624,6 +642,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
   Future<void> resumeLive() async {
     if (_closing) return;
+    pausedFrame.value = null;
     _clearDanmakuPlayback();
     playbackPaused.value = false;
     _resumeAfterBackground = false;
@@ -635,6 +654,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
   Future<void> setAudioOnly(bool enabled) async {
     if (_closing || audioOnly.value == enabled) return;
+    pausedFrame.value = null;
     audioOnly.value = enabled;
     _skipNativeAudio = false;
     _clearDanmakuPlayback();
@@ -1413,6 +1433,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
   Future<void> resetRoom(Site site, String roomId) async {
     if (_closing || (this.site == site && this.roomId == roomId)) return;
+    pausedFrame.value = null;
     ++_roomGeneration;
     ++_playbackGeneration;
     rxSite.value = site;

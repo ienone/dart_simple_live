@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:flutter/semantics.dart';
 
+import 'package:easy_refresh/easy_refresh.dart';
 import 'package:floating/floating.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:get/get.dart';
@@ -260,7 +261,29 @@ class LiveRoomPage extends GetView<LiveRoomController> {
           pauseUponEnteringBackgroundMode: false,
           resumeUponEnteringForegroundMode: false,
           controls: (state) {
-            return playerControls(state, controller);
+            return Stack(
+              fit: StackFit.expand,
+              children: [
+                Obx(() {
+                  final frame = controller.pausedFrame.value;
+                  if (frame == null || !controller.playbackPaused.value || controller.audioOnly.value) {
+                    return const SizedBox.shrink();
+                  }
+                  final image = Image.memory(
+                    frame,
+                    key: const ValueKey('live-paused-frame'),
+                    fit: aspectRatio == null ? boxFit : BoxFit.fill,
+                    gaplessPlayback: true,
+                  );
+                  return IgnorePointer(
+                    child: aspectRatio == null
+                        ? image
+                        : Center(child: AspectRatio(aspectRatio: aspectRatio, child: image)),
+                  );
+                }),
+                playerControls(state, controller),
+              ],
+            );
           },
           aspectRatio: aspectRatio,
           fit: boxFit,
@@ -455,9 +478,9 @@ class LiveRoomPage extends GetView<LiveRoomController> {
                       children: [
                         _DanmakuReconnectPanel(
                           onReconnect: controller.reconnectDanmaku,
+                          scrollController: controller.scrollController,
                           child: ListView.separated(
                             controller: controller.scrollController,
-                            physics: const AlwaysScrollableScrollPhysics(parent: ClampingScrollPhysics()),
                             separatorBuilder: (_, i) => Obx(
                               () => SizedBox(
                                 // *2与原来的EdgeInsets.symmetric(vertical: )做兼容
@@ -920,45 +943,55 @@ class LiveRoomPage extends GetView<LiveRoomController> {
 
 /// An upward pull beyond the latest message reconnects only the chat transport.
 class _DanmakuReconnectPanel extends StatefulWidget {
-  const _DanmakuReconnectPanel({required this.child, required this.onReconnect});
+  const _DanmakuReconnectPanel({required this.child, required this.onReconnect, required this.scrollController});
   final Widget child;
-  final Future<void> Function() onReconnect;
+  final Future<bool> Function() onReconnect;
+  final ScrollController scrollController;
 
   @override
   State<_DanmakuReconnectPanel> createState() => _DanmakuReconnectPanelState();
 }
 
 class _DanmakuReconnectPanelState extends State<_DanmakuReconnectPanel> {
-  double _pull = 0;
-  bool _pending = false;
+  final _refreshController = EasyRefreshController();
 
-  Future<void> _reconnect() async {
-    if (_pending) return;
-    _pending = true;
-    try {
-      await widget.onReconnect();
-    } finally {
-      _pending = false;
-    }
+  @override
+  void dispose() {
+    _refreshController.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) => Semantics(
         key: const ValueKey('live-danmaku-panel'),
-        customSemanticsActions: {const CustomSemanticsAction(label: '重连弹幕'): _reconnect},
-        child: NotificationListener<ScrollNotification>(
-          onNotification: (notification) {
-            if (notification.depth != 0) return false;
-            if (notification is ScrollStartNotification) _pull = 0;
-            if (notification is OverscrollNotification && notification.dragDetails != null) {
-              _pull = (_pull + notification.overscroll).clamp(0.0, 120.0);
-            }
-            if (notification is ScrollEndNotification) {
-              if (_pull >= 64) _reconnect();
-              _pull = 0;
-            }
-            return false;
-          },
+        customSemanticsActions: {
+          const CustomSemanticsAction(label: '重连弹幕'): () => _refreshController.callLoad(),
+        },
+        child: EasyRefresh(
+          controller: _refreshController,
+          scrollController: widget.scrollController,
+          footer: ClassicFooter(
+            key: const ValueKey('live-danmaku-refresh-feedback'),
+            textStyle: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurface,
+                ),
+            iconTheme: Theme.of(context).iconTheme.copyWith(
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+            triggerOffset: 64,
+            infiniteOffset: null,
+            triggerWhenRelease: true,
+            showMessage: false,
+            mainAxisAlignment: MainAxisAlignment.center,
+            processedDuration: const Duration(milliseconds: 800),
+            dragText: '上拉刷新弹幕',
+            armedText: '松手刷新弹幕',
+            readyText: '正在重连弹幕…',
+            processingText: '正在重连弹幕…',
+            processedText: '弹幕已连接',
+            failedText: '弹幕重连失败，请重试',
+          ),
+          onLoad: () async => await widget.onReconnect() ? IndicatorResult.success : IndicatorResult.fail,
           child: widget.child,
         ),
       );

@@ -13,7 +13,8 @@ class LiveRoomCard extends StatelessWidget {
   final LiveRoomItem item;
   final Function()? onLongPress;
   final Function()? onFollowRemove;
-  const LiveRoomCard(this.site, this.item, {super.key, this.onLongPress, this.onFollowRemove});
+  final Widget? footer;
+  const LiveRoomCard(this.site, this.item, {super.key, this.onLongPress, this.onFollowRemove, this.footer});
 
   @override
   Widget build(BuildContext context) {
@@ -125,7 +126,12 @@ class LiveRoomCard extends StatelessWidget {
                 ]
               ],
             ),
-          )
+          ),
+          if (footer != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+              child: footer!,
+            ),
         ],
       ),
     );

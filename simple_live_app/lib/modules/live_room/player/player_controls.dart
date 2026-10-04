@@ -881,14 +881,20 @@ void showFollowUser(LiveRoomController controller) {
 Widget buildPlaybackToggle(LiveRoomController controller) => Obx(() => IconButton(
       key: const ValueKey('live-playback-toggle'),
       tooltip: controller.playbackPaused.value ? '播放' : '暂停',
-      onPressed: controller.toggleLivePlayback,
+      onPressed: () {
+        controller.resetHideControlsTimer();
+        controller.toggleLivePlayback();
+      },
       icon: Icon(controller.playbackPaused.value ? Icons.play_arrow : Icons.pause, color: Colors.white),
     ));
 
 Widget buildAudioOnlyToggle(LiveRoomController controller) => Obx(() => IconButton(
       key: const ValueKey('live-audio-only-toggle'),
       tooltip: controller.audioOnly.value ? '恢复画面' : '只听音频',
-      onPressed: () => controller.setAudioOnly(!controller.audioOnly.value),
+      onPressed: () {
+        controller.resetHideControlsTimer();
+        controller.setAudioOnly(!controller.audioOnly.value);
+      },
       icon: Icon(controller.audioOnly.value ? Icons.headphones : Icons.headphones_outlined,
           color: controller.audioOnly.value ? Theme.of(Get.context!).colorScheme.primary : Colors.white),
     ));

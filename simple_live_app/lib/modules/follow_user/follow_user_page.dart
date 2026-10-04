@@ -5,11 +5,13 @@ import 'package:simple_live_app/app/app_style.dart';
 import 'package:simple_live_app/app/controller/app_settings_controller.dart';
 import 'package:simple_live_app/app/sites.dart';
 import 'package:simple_live_app/modules/follow_user/follow_user_controller.dart';
+import 'package:simple_live_app/modules/follow_user/follow_drag_selection.dart';
 import 'package:simple_live_app/routes/app_navigation.dart';
 import 'package:simple_live_app/routes/route_path.dart';
 import 'package:simple_live_app/services/follow_service.dart';
 import 'package:simple_live_app/widgets/filter_button.dart';
 import 'package:simple_live_app/widgets/follow_user_item.dart';
+import 'package:simple_live_app/widgets/follow_tag_badges.dart';
 import 'package:simple_live_app/widgets/keep_alive_wrapper.dart';
 import 'package:simple_live_app/widgets/live_room_card.dart';
 import 'package:simple_live_app/widgets/page_grid_view.dart';
@@ -192,112 +194,133 @@ class FollowUserPage extends GetView<FollowUserController> {
             ),
           ),
           Obx(
-            () => Expanded(
-              child: AppSettingsController.instance.followStyleNotGrid.value
-                  ? PageGridView(
-                      crossAxisSpacing: 12,
-                      crossAxisCount: count,
-                      pageController: controller,
-                      firstRefresh: true,
-                      showPCRefreshButton: false,
-                      itemBuilder: (_, i) {
-                        var item = controller.list[i];
-                        var site = Sites.allSites[item.siteId]!;
-                        return Obx(() => FollowUserItem(
-                              key: ValueKey('follow-row-${item.id}'),
-                              item: item,
-                              selectionMode: controller.selectionMode.value,
-                              selected: controller.selectedIds.contains(item.id),
-                              onSelected: () => controller.toggleSelection(item),
-                              onRemove: AppSettingsController.instance.hideRemoveFollowButton.value
-                                  ? null
-                                  : () => controller.removeFollow(item),
-                              onTap: () {
-                                if (controller.selectionMode.value) {
-                                  controller.toggleSelection(item);
-                                } else {
-                                  AppNavigator.toLiveRoomDetail(site: site, roomId: item.roomId);
-                                }
-                              },
-                              onLongPress: () => controller.showBottomMenu(item),
-                            ));
-                      },
-                    )
-                  : KeepAliveWrapper(
-                      child: Obx(
-                        () {
-                          // temp
-                          final hide = AppSettingsController.instance.hideRemoveFollowButton.value;
-                          return PageGridView(
-                            pageController: controller,
-                            padding: AppStyle.edgeInsetsA12,
-                            firstRefresh: true,
-                            mainAxisSpacing: 12,
-                            crossAxisSpacing: 12,
-                            crossAxisCount: c,
-                            itemBuilder: (_, i) {
-                              var item = controller.list[i];
-                              // 或许直接继承字段更好，标记工作
-                              LiveRoomItem liveRoomItem = LiveRoomItem(
-                                roomId: item.roomId,
-                                title: item.title.value,
-                                cover: item.cover.value,
-                                userName: item.userName,
-                                online: item.online.value,
-                              );
-                              var site = Sites.allSites[item.siteId]!;
-                              return Obx(() {
-                                final selecting = controller.selectionMode.value;
-                                return GestureDetector(
-                                  key: ValueKey('follow-row-${item.id}'),
-                                  onTap: selecting ? () => controller.toggleSelection(item) : null,
-                                  child: Stack(
-                                    children: [
-                                      AbsorbPointer(
-                                        absorbing: selecting,
-                                        child: LiveRoomCard(
-                                          site,
-                                          liveRoomItem,
-                                          onFollowRemove:
-                                              hide || selecting ? null : () => controller.removeFollow(item),
-                                          onLongPress: () => controller.showBottomMenu(item),
-                                        ),
-                                      ),
-                                      if (selecting)
-                                        Positioned(
-                                          top: 4,
-                                          left: 4,
-                                          child: Material(
-                                            color: Theme.of(context).colorScheme.surface,
-                                            shape: const CircleBorder(),
-                                            child: Checkbox(
-                                              key: ValueKey('follow-select-${item.id}'),
-                                              value: controller.selectedIds.contains(item.id),
-                                              semanticLabel: '选择${item.userName}',
-                                              onChanged: (_) => controller.toggleSelection(item),
+            () {
+              final compact = AppSettingsController.instance.followStyleNotGrid.value;
+              return Expanded(
+                child: FollowDragSelection(
+                  enabled: controller.selectionMode.value,
+                  ids: controller.list.map((item) => item.id).toList(),
+                  selectedIds: controller.selectedIds.toSet(),
+                  onChanged: controller.selectedIds.assignAll,
+                  scrollController: controller.scrollController,
+                  builder: (wrap) => compact
+                      ? PageGridView(
+                          crossAxisSpacing: 12,
+                          crossAxisCount: count,
+                          pageController: controller,
+                          enableDragScrolling: !controller.selectionMode.value,
+                          firstRefresh: true,
+                          showPCRefreshButton: false,
+                          itemBuilder: (_, i) {
+                            var item = controller.list[i];
+                            var site = Sites.allSites[item.siteId]!;
+                            return wrap(
+                                item.id,
+                                Obx(() => FollowUserItem(
+                                      key: ValueKey('follow-row-${item.id}'),
+                                      item: item,
+                                      activeTag: controller.filterMode.value.tag,
+                                      selectionMode: controller.selectionMode.value,
+                                      selected: controller.selectedIds.contains(item.id),
+                                      onSelected: () => controller.toggleSelection(item),
+                                      onRemove: AppSettingsController.instance.hideRemoveFollowButton.value
+                                          ? null
+                                          : () => controller.removeFollow(item),
+                                      onTap: () {
+                                        if (controller.selectionMode.value) {
+                                          controller.toggleSelection(item);
+                                        } else {
+                                          AppNavigator.toLiveRoomDetail(site: site, roomId: item.roomId);
+                                        }
+                                      },
+                                      onLongPress: () => controller.showBottomMenu(item),
+                                    )));
+                          },
+                        )
+                      : KeepAliveWrapper(
+                          child: Obx(
+                            () {
+                              // temp
+                              final hide = AppSettingsController.instance.hideRemoveFollowButton.value;
+                              return PageGridView(
+                                pageController: controller,
+                                enableDragScrolling: !controller.selectionMode.value,
+                                padding: AppStyle.edgeInsetsA12,
+                                firstRefresh: true,
+                                mainAxisSpacing: 12,
+                                crossAxisSpacing: 12,
+                                crossAxisCount: c,
+                                itemBuilder: (_, i) {
+                                  var item = controller.list[i];
+                                  // 或许直接继承字段更好，标记工作
+                                  LiveRoomItem liveRoomItem = LiveRoomItem(
+                                    roomId: item.roomId,
+                                    title: item.title.value,
+                                    cover: item.cover.value,
+                                    userName: item.userName,
+                                    online: item.online.value,
+                                  );
+                                  var site = Sites.allSites[item.siteId]!;
+                                  return wrap(item.id, Obx(() {
+                                    final selecting = controller.selectionMode.value;
+                                    return GestureDetector(
+                                      key: ValueKey('follow-row-${item.id}'),
+                                      onTap: selecting ? () => controller.toggleSelection(item) : null,
+                                      child: Stack(
+                                        children: [
+                                          AbsorbPointer(
+                                            absorbing: selecting,
+                                            child: LiveRoomCard(
+                                              site,
+                                              liveRoomItem,
+                                              footer: item.tags.isEmpty
+                                                  ? null
+                                                  : FollowTagBadges(
+                                                      tags: item.tags,
+                                                      activeTag: controller.filterMode.value.tag,
+                                                    ),
+                                              onFollowRemove:
+                                                  hide || selecting ? null : () => controller.removeFollow(item),
+                                              onLongPress: () => controller.showBottomMenu(item),
                                             ),
                                           ),
-                                        )
-                                      else if (item.pinned)
-                                        Positioned(
-                                          top: 8,
-                                          left: 8,
-                                          child: Tooltip(
-                                            message: '已置顶',
-                                            child: Icon(Icons.push_pin,
-                                                size: 18, color: Theme.of(context).colorScheme.primary),
-                                          ),
-                                        ),
-                                    ],
-                                  ),
-                                );
-                              });
+                                          if (selecting)
+                                            Positioned(
+                                              top: 4,
+                                              left: 4,
+                                              child: Material(
+                                                color: Theme.of(context).colorScheme.surface,
+                                                shape: const CircleBorder(),
+                                                child: Checkbox(
+                                                  key: ValueKey('follow-select-${item.id}'),
+                                                  value: controller.selectedIds.contains(item.id),
+                                                  semanticLabel: '选择${item.userName}',
+                                                  onChanged: (_) => controller.toggleSelection(item),
+                                                ),
+                                              ),
+                                            )
+                                          else if (item.pinned)
+                                            Positioned(
+                                              top: 8,
+                                              left: 8,
+                                              child: Tooltip(
+                                                message: '已置顶',
+                                                child: Icon(Icons.push_pin,
+                                                    size: 18, color: Theme.of(context).colorScheme.primary),
+                                              ),
+                                            ),
+                                        ],
+                                      ),
+                                    );
+                                  }));
+                                },
+                              );
                             },
-                          );
-                        },
-                      ),
-                    ),
-            ),
+                          ),
+                        ),
+                ),
+              );
+            },
           ),
         ],
       ),

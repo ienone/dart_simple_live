@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import 'package:flutter/gestures.dart';
+
 import 'package:easy_refresh/easy_refresh.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:simple_live_app/app/controller/base_controller.dart';
@@ -19,6 +21,7 @@ class PageGridView extends StatelessWidget {
   final double crossAxisSpacing, mainAxisSpacing;
   final int crossAxisCount;
   final bool showPCRefreshButton;
+  final bool enableDragScrolling;
   const PageGridView({
     required this.itemBuilder,
     required this.pageController,
@@ -29,6 +32,7 @@ class PageGridView extends StatelessWidget {
     this.crossAxisSpacing = 0.0,
     this.mainAxisSpacing = 0.0,
     this.showPCRefreshButton = true,
+    this.enableDragScrolling = true,
     required this.crossAxisCount,
     super.key,
   });
@@ -50,13 +54,23 @@ class PageGridView extends StatelessWidget {
             refreshOnStart: firstRefresh,
             onLoad: pageController.loadData,
             onRefresh: pageController.refreshData,
-            child: MasonryGridView.count(
-              padding: padding,
-              itemCount: pageController.list.length,
-              itemBuilder: itemBuilder,
-              crossAxisCount: crossAxisCount,
-              crossAxisSpacing: crossAxisSpacing,
-              mainAxisSpacing: mainAxisSpacing,
+            child: Builder(
+              builder: (context) => ScrollConfiguration(
+                behavior: ScrollConfiguration.of(context).copyWith(
+                  dragDevices: enableDragScrolling
+                      ? ScrollConfiguration.of(context).dragDevices
+                      : const {PointerDeviceKind.trackpad},
+                ),
+                child: MasonryGridView.count(
+                  controller: pageController.scrollController,
+                  padding: padding,
+                  itemCount: pageController.list.length,
+                  itemBuilder: itemBuilder,
+                  crossAxisCount: crossAxisCount,
+                  crossAxisSpacing: crossAxisSpacing,
+                  mainAxisSpacing: mainAxisSpacing,
+                ),
+              ),
             ),
           ),
           Positioned(

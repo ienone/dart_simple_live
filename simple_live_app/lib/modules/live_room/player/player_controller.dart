@@ -297,8 +297,8 @@ mixin PlayerSystemMixin on PlayerMixin, PlayerStateMixin, PlayerDanmakuMixin {
     );
 
     await setPortraitOrientation();
-    if (Platform.isAndroid || Platform.isIOS || Platform.isMacOS) {
-      // 亮度重置,桌面平台可能会报错,暂时不处理桌面平台的亮度
+    if (Platform.isAndroid || Platform.isIOS) {
+      // 仅移动端注册了亮度插件；桌面端不调整应用亮度。
       try {
         await ScreenBrightnessPlatform.instance.resetApplicationScreenBrightness();
       } catch (e) {
@@ -611,13 +611,13 @@ mixin PlayerGestureControlMixin on PlayerStateMixin, PlayerMixin, PlayerSystemMi
     throttle = DelayedThrottle(200);
 
     verticalDragging = true;
-    if (Platform.isAndroid || Platform.isIOS || Platform.isMacOS) {
+    if (Platform.isAndroid || Platform.isIOS) {
       showGestureTip.value = true;
     }
     if (Platform.isAndroid || Platform.isIOS) {
       _currentVolume = await volumeController.getVolume();
     }
-    if (Platform.isAndroid || Platform.isIOS || Platform.isMacOS) {
+    if (Platform.isAndroid || Platform.isIOS) {
       _currentBrightness = await ScreenBrightnessPlatform.instance.application;
     }
   }
