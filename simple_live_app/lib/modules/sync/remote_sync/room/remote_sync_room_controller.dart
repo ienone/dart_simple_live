@@ -14,9 +14,9 @@ import 'package:simple_live_app/app/log.dart';
 import 'package:simple_live_app/app/utils.dart';
 import 'package:simple_live_app/services/follow_sync.dart';
 import 'package:simple_live_app/models/db/history.dart';
-import 'package:simple_live_app/services/bilibili_account_service.dart';
 import 'package:simple_live_app/services/db_service.dart';
 import 'package:simple_live_app/services/signalr_service.dart';
+import 'package:simple_live_app/services/platform_service.dart';
 
 class RemoteSyncRoomController extends BaseController {
   final String roomId;
@@ -177,9 +177,13 @@ class RemoteSyncRoomController extends BaseController {
   void onReceiveBiliAccount(bool overlay, String data) async {
     try {
       var jsonBody = json.decode(data);
-      var cookie = jsonBody['cookie'];
-      BiliBiliAccountService.instance.setCookie(cookie);
-      BiliBiliAccountService.instance.loadUserInfo();
+      final cookie = jsonBody['cookie'] as String;
+      final service = PlatformService.instance;
+      final account = service.accountList.firstWhere((item) => item.siteId == Constant.kBiliBili);
+      if (cookie.isEmpty || !await service.accountLogin(account.copyWith(credential: jsonEncode({'cookie': cookie})))) {
+        SmartDialog.showToast('账号凭证无效');
+        return;
+      }
       SmartDialog.showToast('已同步哔哩哔哩账号');
     } catch (e) {
       SmartDialog.showToast("同步失败:$e");
@@ -298,10 +302,12 @@ class RemoteSyncRoomController extends BaseController {
         SmartDialog.showToast("无设备连接");
         return;
       }
-      if (!BiliBiliAccountService.instance.logined.value) {
+      final account = PlatformService.instance.accountList.firstWhere((item) => item.siteId == Constant.kBiliBili);
+      if (!account.isActive || account.credential.isEmpty) {
         SmartDialog.showToast("未登录哔哩哔哩");
         return;
       }
+      final cookie = jsonDecode(account.credential)['cookie'] as String;
       SmartDialog.showLoading(msg: "发送中...");
 
       var resp = await signalR.sendContent(
@@ -309,7 +315,7 @@ class RemoteSyncRoomController extends BaseController {
         action: "SendBiliAccount",
         overlay: true,
         content: json.encode({
-          "cookie": BiliBiliAccountService.instance.cookie,
+          "cookie": cookie,
         }),
       );
       if (resp.isSuccess) {

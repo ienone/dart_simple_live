@@ -1,5 +1,5 @@
-import 'package:material_ui/material_ui.dart';
 import 'package:get/get.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:remixicon/remixicon.dart';
 import 'package:simple_live_app/app/app_style.dart';
 import 'package:simple_live_app/app/controller/app_settings_controller.dart';
@@ -10,19 +10,17 @@ import 'package:simple_live_app/routes/app_navigation.dart';
 import 'package:simple_live_app/routes/route_path.dart';
 import 'package:simple_live_app/services/follow_service.dart';
 import 'package:simple_live_app/widgets/filter_button.dart';
+import 'package:simple_live_app/widgets/follow_user_card.dart';
 import 'package:simple_live_app/widgets/follow_user_item.dart';
-import 'package:simple_live_app/widgets/follow_tag_badges.dart';
 import 'package:simple_live_app/widgets/keep_alive_wrapper.dart';
-import 'package:simple_live_app/widgets/live_room_card.dart';
 import 'package:simple_live_app/widgets/page_grid_view.dart';
-import 'package:simple_live_core/simple_live_core.dart';
 
 class FollowUserPage extends GetView<FollowUserController> {
   const FollowUserPage({super.key});
 
   @override
   Widget build(BuildContext context) {
-    var count = MediaQuery.of(context).size.width ~/ 500;
+    var count = MediaQuery.of(context).size.width ~/ 350;
     if (count < 1) count = 1;
     var c = MediaQuery.of(context).size.width ~/ 200;
     if (c < 2) {
@@ -252,16 +250,7 @@ class FollowUserPage extends GetView<FollowUserController> {
                                 crossAxisCount: c,
                                 itemBuilder: (_, i) {
                                   var item = controller.list[i];
-                                  var site = Sites.allSites[item.siteId]!;
                                   return wrap(item.id, Obx(() {
-                                    // 或许直接继承字段更好，标记工作
-                                    LiveRoomItem liveRoomItem = LiveRoomItem(
-                                      roomId: item.roomId,
-                                      title: item.title.value,
-                                      cover: item.cover.value,
-                                      userName: item.userName,
-                                      online: item.online.value,
-                                    );
                                     final selecting = controller.selectionMode.value;
                                     return GestureDetector(
                                       key: ValueKey('follow-row-${item.id}'),
@@ -270,15 +259,9 @@ class FollowUserPage extends GetView<FollowUserController> {
                                         children: [
                                           AbsorbPointer(
                                             absorbing: selecting,
-                                            child: LiveRoomCard(
-                                              site,
-                                              liveRoomItem,
-                                              footer: item.tags.isEmpty
-                                                  ? null
-                                                  : FollowTagBadges(
-                                                      tags: item.tags,
-                                                      activeTag: controller.filterMode.value.tag,
-                                                    ),
+                                            child: FollowUserCard(
+                                              item,
+                                              activeTag: controller.filterMode.value.tag,
                                               onFollowRemove:
                                                   hide || selecting ? null : () => controller.removeFollow(item),
                                               onLongPress: () => controller.showBottomMenu(item),

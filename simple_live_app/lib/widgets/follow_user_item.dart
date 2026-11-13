@@ -3,7 +3,6 @@ import 'package:get/get.dart';
 import 'package:remixicon/remixicon.dart';
 import 'package:simple_live_app/app/app_style.dart';
 import 'package:simple_live_app/app/sites.dart';
-import 'package:simple_live_app/app/utils/extensions/duration_2_str_utils.dart';
 import 'package:simple_live_app/models/db/follow_user.dart';
 import 'package:simple_live_app/widgets/net_image.dart';
 import 'package:simple_live_app/widgets/follow_tag_badges.dart';
@@ -38,122 +37,147 @@ class FollowUserItem extends StatelessWidget {
     final metadataStyle = Theme.of(context).textTheme.bodySmall?.copyWith(
           color: Theme.of(context).colorScheme.onSurfaceVariant,
         );
-    return ListTile(
-      contentPadding: AppStyle.edgeInsetsL16.copyWith(right: 4),
-      selected: selected,
-      leading: selectionMode
-          ? Checkbox(
-              key: ValueKey('follow-select-${item.id}'),
-              value: selected,
-              semanticLabel: '选择${item.userName}',
-              onChanged: (_) => onSelected?.call(),
-            )
-          : NetImage(
-              item.face,
-              width: 48,
-              height: 48,
-              borderRadius: 24,
-            ),
-      title: Text.rich(
-        TextSpan(
-          text: item.remark?.isNotEmpty == true ? item.remark : item.userName,
-          children: [
-            if (item.pinned)
-              const WidgetSpan(
-                alignment: ui.PlaceholderAlignment.middle,
-                child: Padding(
-                  padding: EdgeInsets.only(left: 6),
-                  child: Tooltip(message: '已置顶', child: Icon(Icons.push_pin, size: 14)),
-                ),
-              ),
-            WidgetSpan(
-              alignment: ui.PlaceholderAlignment.middle,
-              child: Obx(
-                () => Offstage(
-                  offstage: item.liveStatus.value == 0,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      AppStyle.hGap12,
-                      Container(
-                        width: 8,
-                        height: 8,
-                        decoration: BoxDecoration(
-                          color: item.liveStatus.value == 2 ? Colors.green : Colors.grey,
-                          borderRadius: AppStyle.radius12,
-                        ),
-                      ),
-                      AppStyle.hGap4,
-                      Text(
-                        getStatus(item.liveStatus.value),
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.normal,
-                          color: item.liveStatus.value == 2 ? null : Colors.grey,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ],
+    return Ink(
+        decoration: BoxDecoration(
+          gradient: playing
+              ? LinearGradient(
+                  begin: Alignment.bottomCenter,
+                  end: Alignment.topCenter,
+                  colors: [Colors.red.withValues(alpha: 0.06), Colors.transparent],
+                )
+              : null,
         ),
-      ),
-      subtitle: Row(
-        children: [
-          Image.asset(
-            site.logo,
-            width: 20,
-          ),
-          AppStyle.hGap4,
-          Text(
-            site.name,
-            style: metadataStyle,
-          ),
-          AppStyle.hGap4,
-          Text(
-            Duration(seconds: item.watchDurationSec).toHMSString(),
-            style: metadataStyle,
-          ),
-          if (item.tags.isNotEmpty) ...[
-            const SizedBox(width: 8),
-            Expanded(child: FollowTagBadges(tags: item.tags, activeTag: activeTag)),
-          ],
-        ],
-      ),
-      trailing: selectionMode
-          ? null
-          : playing
-              ? const SizedBox(
-                  width: 64,
-                  child: Center(
-                    child: Icon(
-                      Icons.play_arrow,
+        child: ListTile(
+          contentPadding: AppStyle.edgeInsetsL16.copyWith(right: 4),
+          selected: selected,
+          leading: selectionMode
+              ? Checkbox(
+                  key: ValueKey('follow-select-${item.id}'),
+                  value: selected,
+                  semanticLabel: '选择${item.userName}',
+                  onChanged: (_) => onSelected?.call(),
+                )
+              : NetImage(
+                  item.face,
+                  width: 48,
+                  height: 48,
+                  borderRadius: 24,
+                ),
+          title: Text.rich(
+            TextSpan(
+              text: item.remark?.isNotEmpty == true ? item.remark : item.userName,
+              children: [
+                if (item.pinned)
+                  const WidgetSpan(
+                    alignment: ui.PlaceholderAlignment.middle,
+                    child: Padding(
+                      padding: EdgeInsets.only(left: 6),
+                      child: Tooltip(message: '已置顶', child: Icon(Icons.push_pin, size: 14)),
                     ),
                   ),
-                )
-              : (onRemove == null
-                  ? null
-                  : IconButton(
-                      tooltip: '取消关注',
-                      onPressed: () {
-                        onRemove?.call();
-                      },
-                      icon: const Icon(Remix.dislike_line),
-                    )),
-      onTap: onTap,
-      onLongPress: onLongPress,
-    );
+                WidgetSpan(
+                  alignment: ui.PlaceholderAlignment.middle,
+                  child: Obx(
+                    () => Offstage(
+                      offstage: item.liveStatus.value == 0,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          AppStyle.hGap12,
+                          Container(
+                            width: 8,
+                            height: 8,
+                            decoration: BoxDecoration(
+                              color: LiveStatus.fromCode(item.liveStatus.value, playing: playing).color,
+                              borderRadius: AppStyle.radius12,
+                            ),
+                          ),
+                          AppStyle.hGap4,
+                          Text(
+                            LiveStatus.fromCode(item.liveStatus.value, playing: playing).label,
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.normal,
+                              color: item.liveStatus.value == 2 ? null : Colors.grey,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          subtitle: Row(
+            children: [
+              Image.asset(
+                site.logo,
+                width: 16,
+              ),
+              AppStyle.hGap4,
+              Text(
+                site.name,
+                style: metadataStyle,
+              ),
+              AppStyle.hGap4,
+              Text(
+                "${(item.watchDurationSec / 3600).toStringAsFixed(1)}h",
+                style: metadataStyle,
+              ),
+              if (item.tags.isNotEmpty) ...[
+                const SizedBox(width: 8),
+                Expanded(child: FollowTagBadges(tags: item.tags, activeTag: activeTag)),
+              ],
+            ],
+          ),
+          trailing: selectionMode
+              ? null
+              : playing
+                  ? const SizedBox(
+                      width: 64,
+                      child: Center(
+                        child: Icon(
+                          Icons.play_arrow,
+                        ),
+                      ),
+                    )
+                  : (onRemove == null
+                      ? null
+                      : IconButton(
+                          tooltip: '取消关注',
+                          onPressed: () {
+                            onRemove?.call();
+                          },
+                          icon: const Icon(Remix.dislike_line),
+                        )),
+          onTap: onTap,
+          onLongPress: onLongPress,
+        ));
   }
+}
 
-  String getStatus(int status) {
+enum LiveStatus {
+  reading('读取中', Colors.grey),
+  notLiving('未开播', Colors.grey),
+  living('直播中', Colors.green),
+  watching('观看中', Colors.red);
+
+  const LiveStatus(this.label, this.color);
+
+  final String label;
+  final Color color;
+
+  static LiveStatus fromCode(int status, {bool playing = false}) {
+    if (playing) {
+      return LiveStatus.watching;
+    }
     if (status == 0) {
-      return "读取中";
+      return LiveStatus.reading;
     } else if (status == 1) {
-      return "未开播";
+      return LiveStatus.notLiving;
     } else {
-      return "直播中";
+      return LiveStatus.living;
     }
   }
 }

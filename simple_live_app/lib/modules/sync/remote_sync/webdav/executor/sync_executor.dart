@@ -21,7 +21,7 @@ class SyncExecutor {
 
   SyncExecutor._();
 
-  final List<SyncResource> _resources = [];
+  List<SyncResource> _resources = [];
   bool _syncing = false;
 
   void buildExecutorAttr(
@@ -33,15 +33,14 @@ class SyncExecutor {
     bool isSyncSetting = true,
   }) {
     _davClient = davClient;
-    _resources.clear();
-    _resources.addAll([
+    _resources = [
       if (isSyncHistories) HistorySyncResource(),
       if (isSyncFollows) FollowSyncResource(),
       if (isSyncBlockWord) BlockwordsSyncResource(),
       if (isSyncAccount) UserAccountCookieSyncResource(),
       if (isSyncSetting) SettingsSyncResource(),
       FollowBlockSyncResource(),
-    ]);
+    ];
   }
 
   // fetch -> local-> remote -> select sync-mode

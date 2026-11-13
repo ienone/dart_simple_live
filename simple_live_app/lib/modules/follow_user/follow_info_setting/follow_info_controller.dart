@@ -4,8 +4,8 @@ import 'package:get/get.dart';
 import 'package:simple_live_app/app/controller/base_controller.dart';
 import 'package:simple_live_app/app/sites.dart';
 import 'package:simple_live_app/app/utils.dart';
-import 'package:simple_live_app/app/utils/url_parse.dart';
 import 'package:simple_live_app/app/utils/extensions/duration_2_str_utils.dart';
+import 'package:simple_live_app/app/utils/url_parse.dart';
 import 'package:simple_live_app/models/db/follow_user.dart' show FollowUser;
 import 'package:simple_live_app/modules/follow_user/follow_tag_picker.dart';
 import 'package:simple_live_app/models/db/history.dart';
@@ -62,6 +62,25 @@ class FollowInfoController extends BasePageController<FollowUser> {
     if (current == null) return;
     current.remark = newRemark;
     await FollowService.instance.addFollow(current);
+    followUser.refresh();
+  }
+
+  Future<void> updateWatchDurationSec(int watchDurationSec) async {
+    final current = followUser.value;
+    if (current == null) return;
+    final duration = Duration(seconds: watchDurationSec).toHMSString();
+    await FollowService.instance.withFollowWrite(() async {
+      current.watchDurationSec = watchDurationSec;
+      // 旧版备份仍读取此字段。
+      // ignore: deprecated_member_use_from_same_package
+      current.watchDuration = duration;
+      final history = HistoryService.instance.getHistory(current.id);
+      if (history != null) {
+        history.watchDuration = duration;
+        await HistoryService.instance.addOrUpdateHistory(history);
+      }
+      await FollowService.instance.addFollow(current);
+    });
     followUser.refresh();
   }
 

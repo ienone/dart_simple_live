@@ -1,13 +1,14 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:math' as math;
 
 import 'package:canvas_danmaku/canvas_danmaku.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:simple_live_app/app/app_style.dart';
@@ -21,15 +22,17 @@ import 'package:simple_live_app/app/utils/sandbox.dart';
 import 'package:simple_live_app/models/db/follow_user.dart';
 import 'package:simple_live_app/models/db/follow_user_block.dart';
 import 'package:simple_live_app/models/db/history.dart';
+import 'package:simple_live_app/modules/live_room/danmaku/danmaku_emoticon.dart';
 import 'package:simple_live_app/modules/live_room/player/player_controller.dart';
 import 'package:simple_live_app/modules/settings/danmu_settings_page.dart';
 import 'package:simple_live_app/services/follow_block_service.dart';
 import 'package:simple_live_app/services/follow_service.dart';
 import 'package:simple_live_app/services/history_service.dart';
 import 'package:simple_live_app/services/media_session_service.dart';
-import 'package:simple_live_app/src/rust/api/danmaku_mask.dart';
+import 'package:simple_live_app/rust/api/danmaku_mask.dart';
 import 'package:simple_live_app/widgets/desktop_refresh_button.dart';
 import 'package:simple_live_app/widgets/follow_user_item.dart';
+import 'package:simple_live_app/widgets/superchat_card.dart';
 import 'package:simple_live_core/simple_live_core.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:url_launcher/url_launcher_string.dart';
@@ -131,8 +134,10 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   }
 
   late Rx<Site> rxSite;
+
   Site get site => rxSite.value;
   late Rx<String> rxRoomId;
+
   String get roomId => rxRoomId.value;
 
   Rx<LiveRoomDetail?> detail = Rx<LiveRoomDetail?>(null);
@@ -151,7 +156,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   Rx<FollowUserBlock?> followUserBlock = Rx<FollowUserBlock?>(null);
 
   /// 清晰度数据
-  RxList<LivePlayQuality> qualites = RxList<LivePlayQuality>();
+  RxList<LivePlayQuality> qualities = RxList<LivePlayQuality>();
 
   /// 当前清晰度
   var currentQuality = -1;
@@ -192,6 +197,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   Error? error;
 
   int _count = 0;
+
+  final int _kMaxChatMessageCount = 150;
 
   @override
   void onInit() {
@@ -268,8 +275,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       if (filteredBatch.isEmpty) return;
 
       messages.addAll(filteredBatch);
-      if (messages.length > 200 && !disableAutoScroll.value) {
-        messages.removeRange(0, messages.length - 200);
+      if (messages.length > _kMaxChatMessageCount && !disableAutoScroll.value) {
+        messages.removeRange(0, messages.length - _kMaxChatMessageCount);
       }
 
       WidgetsBinding.instance.addPostFrameCallback(
@@ -288,6 +295,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
                   msg.color.g,
                   msg.color.b,
                 ),
+                // 表情包（目前仅 B 站下发）：交给渲染层把 [占位符] 换成图片
+                extra: msg.emoticons,
               ))
           .toList());
     } finally {
@@ -342,6 +351,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       }
     });
   }
+
   // 弹窗逻辑
 
   Future<void> refreshRoom() {
@@ -473,7 +483,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       if (AppSettingsController.instance.danmakuMaskEnable.value && messages.length > 50) {
         danmakuBuffer.add(msg);
       } else {
-        if (messages.length > 200 && !disableAutoScroll.value) {
+        if (messages.length > _kMaxChatMessageCount && !disableAutoScroll.value) {
           messages.removeAt(0);
         }
         messages.add(msg);
@@ -493,6 +503,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
               msg.color.g,
               msg.color.b,
             ),
+            // 表情包（目前仅 B 站下发）：交给渲染层把 [占位符] 换成图片
+            extra: msg.emoticons,
           ),
         ]);
       }
@@ -500,7 +512,22 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       online.value = msg.data;
     } else if (msg.type == LiveMessageType.superChat) {
       // set newest sc at the top， limit 20 better I think
-      superChats.insert(0, msg.data);
+      // unique ensures from front
+      // 没想到 huya-data居然会有时间戳不准的问题
+      LiveSuperChatMessage scData = msg.data;
+      bool contain = superChats.any(
+        (s) => s.price == scData.price && s.userName == scData.userName && s.message == scData.message,
+      );
+      if (!contain) {
+        superChats.insert(0, msg.data);
+        if (superChats.length > 20) {
+          superChats.removeRange(20, superChats.length);
+        }
+        // 全屏下显示15s
+        if (AppSettingsController.instance.autoShowFullSCEnable.value) {
+          showSuperChatSheet(duration: 15);
+        }
+      }
     }
   }
 
@@ -690,7 +717,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     await _resolvePlayback(generation, refreshDetail: true);
   }
 
-  Future<void> getPlayQualites() => _resolvePlayback(++_playbackGeneration, resetQuality: true);
+  Future<void> getPlayQualities() => _resolvePlayback(++_playbackGeneration, resetQuality: true);
 
   Future<int> getQualityLevel() async {
     var qualityLevel = AppSettingsController.instance.qualityLevel.value;
@@ -738,7 +765,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
         return;
       }
       // Refresh quality data too: some adapters store signed/expiring URLs there.
-      final qualities = await requestedSite.liveSite.getPlayQualites(detail: room);
+      final qualities = await requestedSite.liveSite.getPlayQualities(detail: room);
       if (!_currentPlayback(generation)) return;
       if (qualities.isEmpty) throw StateError('No live qualities');
       var qualityIndex = currentQuality;
@@ -772,7 +799,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
         if (!_currentPlayback(generation)) return;
       }
       if (source.urls.isEmpty) throw StateError('No live URLs');
-      qualites.assignAll(qualities);
+      this.qualities.assignAll(qualities);
       currentQuality = qualityIndex;
       currentQualityInfo.value = quality.quality;
       playUrls.assignAll(source.urls);
@@ -1048,9 +1075,9 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
           await getPlayUrl();
         },
         child: ListView.builder(
-          itemCount: qualites.length,
+          itemCount: qualities.length,
           itemBuilder: (_, i) {
-            var item = qualites[i];
+            var item = qualities[i];
             return RadioListTile(
               value: i,
               title: Text(item.quality),
@@ -1337,6 +1364,58 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     );
   }
 
+  // 弹出sc列表
+  void showSuperChatSheet({int? duration}) {
+    if (fullScreenState.value) {
+      if (isVertical.value && duration == null) {
+        // 不适配竖屏直播间
+        Utils.showBottomSheet(
+          title: "SC列表",
+          child: Obx(
+            () => Stack(
+              children: [
+                ListView.separated(
+                  padding: AppStyle.edgeInsetsA12,
+                  itemCount: superChats.length,
+                  separatorBuilder: (_, i) => AppStyle.vGap12,
+                  itemBuilder: (_, i) {
+                    var item = superChats[i];
+                    return SuperChatCard(
+                      item,
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      } else {
+        // 完全封装
+        Utils.showScRightDialog(
+          title: duration == null ? "SC列表" : null,
+          duration: duration,
+          child: Obx(
+            () => Stack(
+              children: [
+                ListView.separated(
+                  padding: AppStyle.edgeInsetsA12,
+                  itemCount: duration == null ? superChats.length : math.min(superChats.length, 3),
+                  separatorBuilder: (_, i) => AppStyle.vGap12,
+                  itemBuilder: (_, i) {
+                    var item = superChats[i];
+                    return SuperChatCard(
+                      item,
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      }
+    }
+  }
+
   void showAutoExitSheet() {
     if (AppSettingsController.instance.autoExitEnable.value && !delayAutoExit.value) {
       SmartDialog.showToast("已设置了全局定时关闭");
@@ -1438,11 +1517,12 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     ++_playbackGeneration;
     rxSite.value = site;
     rxRoomId.value = roomId;
+    DanmakuEmoticonRenderer.clearCache();
     detail.value = null;
     liveStatus.value = false;
     currentQuality = -1;
     playUrls.clear();
-    qualites.clear();
+    qualities.clear();
     playbackPaused.value = false;
     nativeAudioOnly.value = false;
     _skipNativeAudio = false;
@@ -1507,6 +1587,9 @@ ${error?.stackTrace}''');
 
     liveDanmaku.stop();
     danmakuController = null;
+    // 直接退出直播间不经过 resetRoom，这里补一次：表情是分房间下发的，
+    // 留在静态缓存里的源图句柄与合成位图出房间后就没有复用价值了。
+    DanmakuEmoticonRenderer.clearCache();
     rustDanmakuMask.dispose();
     super.onClose();
   }

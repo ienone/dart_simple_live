@@ -1,3 +1,5 @@
+import 'package:simple_live_app/widgets/settings/settings_action.dart';
+import 'package:simple_live_app/app/utils.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:get/get.dart';
 import 'package:remixicon/remixicon.dart';
@@ -118,64 +120,45 @@ class FollowInfoPage extends GetView<FollowInfoController> {
             AppStyle.divider,
             Padding(
               padding: AppStyle.edgeInsetsA12,
-              child: Obx(() {
-                return ListTile(
-                  title: Text('备注设置', style: Theme.of(context).textTheme.bodyLarge),
-                  visualDensity: VisualDensity.compact,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: AppStyle.radius8,
-                  ),
-                  contentPadding: AppStyle.edgeInsetsL16.copyWith(right: 8),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        controller.followUser.value?.remark?.isNotEmpty == true
-                            ? controller.followUser.value!.remark!
-                            : '无',
-                        style: Theme.of(context).textTheme.bodyMedium!.copyWith(color: Colors.grey),
-                      ),
-                      AppStyle.hGap4,
-                      const Icon(
-                        Icons.chevron_right,
-                        color: Colors.grey,
-                      ),
-                    ],
-                  ),
-                  onTap: () {
-                    final textController = TextEditingController(text: controller.followUser.value?.remark);
-                    Get.dialog(
-                      AlertDialog(
-                        title: const Text("修改备注"),
-                        content: TextField(
-                          controller: textController,
-                          decoration: const InputDecoration(border: OutlineInputBorder(), hintText: "请输入备注名"),
-                          autofocus: true,
-                          onSubmitted: (value) {
-                            controller.updateRemark(value.trim());
-                            Get.back();
-                          },
-                        ),
-                        actions: [
-                          TextButton(
-                            onPressed: () => Get.back(),
-                            child: const Text("取消"),
-                          ),
-                          TextButton(
-                            onPressed: () {
-                              controller.updateRemark(textController.text.trim());
-                              Get.back();
-                            },
-                            child: const Text("确定"),
-                          ),
-                        ],
-                      ),
+              child: Obx(
+                () => SettingsAction(
+                  title: '修改备注',
+                  value: controller.followUser.value?.remark ?? '',
+                  onTap: () async {
+                    var res = await Utils.showEditTextDialog(
+                      controller.followUser.value?.remark ?? '',
+                      title: '修改备注',
                     );
+                    if (res != null) {
+                      await controller.updateRemark(res.trim());
+                    }
                   },
-                );
-              }),
+                ),
+              ),
             ),
             AppStyle.divider,
+            Padding(
+              padding: AppStyle.edgeInsetsA12,
+              child: Obx(
+                () => SettingsAction(
+                  title: '修改观看时长',
+                  value: '${controller.followUser.value?.watchDurationSec} 秒',
+                  onTap: () async {
+                    final res = await Utils.showEditTextDialog(
+                      '${controller.followUser.value!.watchDurationSec}',
+                      title: '修改观看时长',
+                      hintText: '请输入非负整数',
+                      validate: (text) => (int.tryParse(text) ?? -1) >= 0,
+                    );
+                    if (res != null) {
+                      await controller.updateWatchDurationSec(int.parse(res));
+                    }
+                  },
+                ),
+              ),
+            ),
+            AppStyle.divider,
+
             // 平台迁移：输入链接解析
             Padding(
               padding: AppStyle.edgeInsetsA12,

@@ -14,6 +14,10 @@ class CustomLogInterceptor extends Interceptor {
   @override
   void onError(DioException err, ErrorInterceptorHandler handler) {
     var time = DateTime.now().millisecondsSinceEpoch - err.requestOptions.extra["ts"];
+    if (err.requestOptions.uri.path == '/sync/account/account') {
+      Log.w('账号同步请求失败：${err.type}，HTTP ${err.response?.statusCode}');
+      return super.onError(err, handler);
+    }
     if (!kReleaseMode) {
       Log.e('''【HTTP请求错误-${err.type}】 耗时:${time}ms
 ${err.message}
@@ -45,6 +49,9 @@ Response Data：${err.response?.data}''', err.stackTrace);
 
   @override
   void onResponse(Response response, ResponseInterceptorHandler handler) {
+    if (response.requestOptions.uri.path == '/sync/account/account') {
+      return super.onResponse(response, handler);
+    }
     var time = DateTime.now().millisecondsSinceEpoch - response.requestOptions.extra["ts"];
     if (!kReleaseMode) {
       Log.i(

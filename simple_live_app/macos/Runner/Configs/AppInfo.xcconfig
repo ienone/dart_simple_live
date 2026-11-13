@@ -12,3 +12,6 @@ PRODUCT_BUNDLE_IDENTIFIER = com.xycz.simpleLiveApp
 
 // The copyright displayed in application information
 PRODUCT_COPYRIGHT = Copyright © 2023 com.xycz. All rights reserved.
+
+// media_kit_video exposes Mpv types in its Swift interface.
+SWIFT_INCLUDE_PATHS = $(inherited) "$(SRCROOT)/Flutter/ephemeral/.symlinks/plugins/media_kit_video/common/mpv/include"
