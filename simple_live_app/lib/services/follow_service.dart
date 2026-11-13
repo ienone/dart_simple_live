@@ -53,16 +53,13 @@ class FollowService extends GetxService {
   /// 用户自定义的tag
   RxList<FollowUserTag> followTagList = RxList<FollowUserTag>();
 
-  /// 当前tag的用户列表
-  RxList<FollowUser> curTagFollowList = RxList<FollowUser>();
+  final curFollowList = <FollowUser>[].obs;
+  FollowUserTag? _displayTag;
 
   /// 线程安全
   final _lock = Lock(reentrant: true);
 
   Future<T> withFollowWrite<T>(Future<T> Function() action) => _lock.synchronized(action);
-
-  /// 已经更新状态的数量
-  var updatedCount = 0;
 
   /// 是否正在更新
   var updating = false.obs;
@@ -270,9 +267,28 @@ class FollowService extends GetxService {
         filterData();
       });
 
-  void filterDataByTag(FollowUserTag tag) {
-    curTagFollowList.assignAll(followList.where((follow) => tag.tag == '全部' || follow.tags.contains(tag.tag)));
-    listSortByMethod(curTagFollowList, AppSettingsController.instance.followSortMethod.value);
+  void setDisplayTag(FollowUserTag tag) {
+    _displayTag = tag;
+    _updateDisplayList();
+  }
+
+  void _updateDisplayList({bool refreshItems = false}) {
+    final tag = _displayTag;
+    Iterable<FollowUser> visible = followList;
+    if (tag?.id == '1') {
+      visible = liveList;
+    } else if (tag?.id == '2') {
+      visible = notLiveList;
+    } else if (tag != null && tag.id != '0') {
+      visible = visible.where((item) => item.tags.contains(tag.tag));
+    }
+    if (tag?.id != '2' && AppSettingsController.instance.hideOfflineFollow.value) {
+      visible = visible.where((item) => item.liveStatus.value == 2);
+    }
+    final items = visible.toList();
+    if (refreshItems || !const ListEquality<FollowUser>().equals(curFollowList, items)) {
+      curFollowList.assignAll(items);
+    }
   }
 
   Future<void> updateFollowTagOrder(FollowUserTag oldTag, FollowUserTag newTag) => withFollowWrite(() async {
@@ -382,6 +398,7 @@ class FollowService extends GetxService {
           followList.assignAll(list);
           liveList.clear();
           notLiveList.clear();
+          _updateDisplayList();
           if (!_closed) _updatedListController.add(0);
           return;
         }
@@ -403,7 +420,6 @@ class FollowService extends GetxService {
         followList.assignAll(list);
         await _rebuildTagIndex();
         _buildDormantList();
-        filterData();
       });
 
   /// 构建休眠用户列表
@@ -509,7 +525,8 @@ class FollowService extends GetxService {
         CoreLog.i("Update Follow: Cycle 1, updating top+middle ${usersToUpdate.length}/$totalUsers users.");
       }
     } else {
-      usersToUpdate = List.from(followList);
+      usersToUpdate = followList.toList();
+      listSortByMethod(usersToUpdate, AppSettingsController.instance.followSortMethod.value);
       if (cycle != null) {
         CoreLog.i("Update Follow: List <= 100, updating all ${usersToUpdate.length} users.");
       }
@@ -517,10 +534,8 @@ class FollowService extends GetxService {
     if (_closed) return;
     cancelStatusUpdate();
     final epoch = _statusEpoch;
-    updatedCount = 0;
     updating.value = usersToUpdate.isNotEmpty;
     if (usersToUpdate.isEmpty) {
-      filterData();
       return;
     }
     for (final item in usersToUpdate) {
@@ -535,7 +550,6 @@ class FollowService extends GetxService {
         }
         updating.value = false;
         _buildDormantList();
-        filterData();
       }
     }
     if (_closed || epoch != _statusEpoch) return;
@@ -576,11 +590,13 @@ class FollowService extends GetxService {
     final follow = followList.firstWhereOrNull((item) => item.id == id && !item.deleted);
     if (follow == null || _closed) return;
     _statusRequestIds[id] = (_statusRequestIds[id] ?? 0) + 1;
+    final oldStatus = follow.liveStatus.value;
+    final wasFailed = follow.statusRefreshFailed.value;
     follow.liveStatus.value = live ? 2 : 1;
     follow.statusRefreshFailed.value = false;
     follow.refreshingStatus.value = false;
     if (!live) follow.cover.value = '';
-    filterData();
+    _publishStatusChange(follow, oldStatus, wasFailed);
   }
 
   /// One concurrency limit for every refresh generation. A UI timeout does not
@@ -611,6 +627,8 @@ class FollowService extends GetxService {
     final requestId = (_statusRequestIds[item.id] ?? 0) + 1;
     _statusRequestIds[item.id] = requestId;
     bool isCurrent() => _isCurrentStatusRequest(item, requestEpoch) && _statusRequestIds[item.id] == requestId;
+    final oldStatus = item.liveStatus.value;
+    final wasFailed = item.statusRefreshFailed.value;
     item.refreshingStatus.value = true;
     try {
       final site = Sites.allSites[item.siteId];
@@ -629,10 +647,19 @@ class FollowService extends GetxService {
     } finally {
       if (isCurrent()) {
         item.refreshingStatus.value = false;
-        if (epoch != null) updatedCount++;
-        filterData();
+        _publishStatusChange(item, oldStatus, wasFailed);
       }
     }
+  }
+
+  void _publishStatusChange(FollowUser item, int oldStatus, bool wasFailed) {
+    if (item.liveStatus.value != oldStatus) {
+      liveListSort(refreshItems: false);
+    } else if (item.statusRefreshFailed.value == wasFailed) {
+      return;
+    }
+    // 播放队列还需要知道哪些房间查询失败或已恢复。
+    _updatedListController.add(0);
   }
 
   void filterData() {
@@ -640,10 +667,11 @@ class FollowService extends GetxService {
     if (!_closed) _updatedListController.add(0);
   }
 
-  void liveListSort() {
+  void liveListSort({bool refreshItems = true}) {
     listSortByMethod(followList, AppSettingsController.instance.followSortMethod.value);
     liveList.assignAll(followList.where((x) => x.liveStatus.value == 2));
     notLiveList.assignAll(followList.where((x) => x.liveStatus.value == 1));
+    _updateDisplayList(refreshItems: refreshItems);
   }
 
   void listSortByMethod(List<FollowUser> list, SortMethod sortMethod) {
@@ -882,7 +910,6 @@ class FollowService extends GetxService {
         followList.assignAll(follows);
         await _rebuildTagIndex();
         _buildDormantList();
-        filterData();
       });
 
   bool _validOrderKey(String key) {

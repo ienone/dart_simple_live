@@ -19,7 +19,8 @@ import 'package:simple_live_app/services/follow_service.dart';
 
 class FollowUserController extends BasePageController<FollowUser> {
   StreamSubscription<dynamic>? onUpdatedIndexedStream;
-  StreamSubscription<dynamic>? onUpdatedListStream;
+  int _refreshGeneration = 0;
+  final _workers = <Worker>[];
 
   /// 0:全部 1:直播中 2:未直播
   var filterMode = FollowUserTag(id: "0", tag: "全部", userId: []).obs;
@@ -62,53 +63,49 @@ class FollowUserController extends BasePageController<FollowUser> {
         }
       },
     );
-    onUpdatedListStream = FollowService.instance.updatedListStream.listen(
-      (event) {
+    final service = FollowService.instance;
+    list = service.curFollowList;
+    userTagList = service.followTagList;
+    sortMethod = AppSettingsController.instance.followSortMethod;
+    _workers.addAll([
+      ever(service.followTagList, (_) {
         updateTagList();
         filterData();
-      },
-    );
-
-    sortMethod = AppSettingsController.instance.followSortMethod;
+      }),
+      ever(AppSettingsController.instance.hideOfflineFollow, (_) => filterData()),
+      ever(sortMethod, (_) => service.filterData()),
+      everAll([list, service.updating], (_) {
+        pageEmpty.value = list.isEmpty && !service.updating.value;
+        if (selectedIds.isNotEmpty) selectedIds.retainAll(service.followList.map((item) => item.id));
+      }),
+    ]);
+    updateTagList();
+    filterData();
+    pageEmpty.value = list.isEmpty && !service.updating.value;
     super.onInit();
   }
 
   @override
   Future<void> refreshData() async {
-    pageLoadding.value = true;
+    _refreshGeneration += 1;
+    final generation = _refreshGeneration;
     pageError.value = false;
+    currentPage = 2;
+    canLoadMore.value = false;
     try {
       await FollowService.instance.loadData();
-      updateTagList();
-      filterData();
-      currentPage = 2;
-      canLoadMore.value = false;
     } catch (error) {
-      handleError(error, showPageError: list.isEmpty);
-    } finally {
-      pageLoadding.value = false;
+      if (!isClosed && generation == _refreshGeneration) {
+        handleError(error, showPageError: list.isEmpty);
+      }
     }
   }
 
+  // 关注列表不分页，避免基类加载逻辑改写共享列表。
   @override
-  Future<List<FollowUser>> getData(int page, int pageSize) async {
-    if (page > 1) {
-      return Future.value([]);
-    }
-    if (filterMode.value.id == "0") {
-      return FollowService.instance.followList.value;
-    } else if (filterMode.value.id == "1") {
-      return FollowService.instance.liveList.value;
-    } else if (filterMode.value.id == "2") {
-      return FollowService.instance.notLiveList.value;
-    } else {
-      FollowService.instance.filterDataByTag(filterMode.value);
-      return FollowService.instance.curTagFollowList.value;
-    }
-  }
+  Future<void> loadData() async {}
 
   void updateTagList() {
-    userTagList.assignAll(FollowService.instance.followTagList);
     tagList.value = tagList.take(3).toList();
     for (var i in userTagList) {
       if (!tagList.contains(i)) {
@@ -120,26 +117,8 @@ class FollowUserController extends BasePageController<FollowUser> {
         tagList.first;
   }
 
-  // 数据清洗：不关心中间 data_flow，最终由filterData决定显示数据
   void filterData() {
-    bool hideOffline = AppSettingsController.instance.hideOfflineFollow.value;
-
-    if (filterMode.value.id == "0") {
-      list.assignAll(FollowService.instance.followList.value);
-    } else if (filterMode.value.id == "1") {
-      list.assignAll(FollowService.instance.liveList.value);
-    } else if (filterMode.value.id == "2") {
-      list.assignAll(FollowService.instance.notLiveList.value);
-    } else {
-      FollowService.instance.filterDataByTag(filterMode.value);
-      list.assignAll(FollowService.instance.curTagFollowList);
-    }
-
-    if (hideOffline && filterMode.value.id != "2") {
-      list.retainWhere((user) => user.liveStatus.value == 2);
-    }
-    pageEmpty.value = list.isEmpty;
-    selectedIds.retainAll(FollowService.instance.followList.map((follow) => follow.id));
+    FollowService.instance.setDisplayTag(filterMode.value);
   }
 
   // 用户自定义关注样式
@@ -160,8 +139,6 @@ class FollowUserController extends BasePageController<FollowUser> {
     if (res != null) {
       sortMethod.value = res;
       AppSettingsController.instance.setFollowSortMethod(sortMethod.value);
-      FollowService.instance.liveListSort();
-      filterData();
     }
   }
 
@@ -293,7 +270,10 @@ class FollowUserController extends BasePageController<FollowUser> {
   @override
   void onClose() {
     onUpdatedIndexedStream?.cancel();
-    onUpdatedListStream?.cancel();
+    _refreshGeneration += 1;
+    for (final worker in _workers) {
+      worker.dispose();
+    }
     super.onClose();
   }
 }

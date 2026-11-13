@@ -252,16 +252,16 @@ class FollowUserPage extends GetView<FollowUserController> {
                                 crossAxisCount: c,
                                 itemBuilder: (_, i) {
                                   var item = controller.list[i];
-                                  // 或许直接继承字段更好，标记工作
-                                  LiveRoomItem liveRoomItem = LiveRoomItem(
-                                    roomId: item.roomId,
-                                    title: item.title.value,
-                                    cover: item.cover.value,
-                                    userName: item.userName,
-                                    online: item.online.value,
-                                  );
                                   var site = Sites.allSites[item.siteId]!;
                                   return wrap(item.id, Obx(() {
+                                    // 或许直接继承字段更好，标记工作
+                                    LiveRoomItem liveRoomItem = LiveRoomItem(
+                                      roomId: item.roomId,
+                                      title: item.title.value,
+                                      cover: item.cover.value,
+                                      userName: item.userName,
+                                      online: item.online.value,
+                                    );
                                     final selecting = controller.selectionMode.value;
                                     return GestureDetector(
                                       key: ValueKey('follow-row-${item.id}'),
