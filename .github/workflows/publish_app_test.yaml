@@ -163,9 +163,9 @@ jobs:
           tail -n 20 ../windows-build.log
       - name: Upload Windows build diagnostics
         if: failure() && matrix.platform == 'windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: windows-build-log
+          archive: false
           path: windows-build.log
           retention-days: 7
       - name: Package Windows
@@ -185,11 +185,53 @@ jobs:
         env:
           BUILD_ARCH: ${{ matrix.arch }}
         run: bash scripts/package_test_linux.sh
-      - uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() && hashFiles('dist/*') != '' }}
+      - name: Upload android-arm64-v8a.apk
+        if: ${{ !cancelled() && matrix.platform == 'android' && (success() || hashFiles('dist/test-Slive-android-arm64-v8a.apk') != '') }}
+        uses: ./.github/actions/upload-package
         with:
-          name: test-Slive-${{ matrix.platform }}-${{ matrix.arch }}
-          path: dist/*
-          if-no-files-found: error
-          retention-days: 30
-          compression-level: 0
+          path: dist/test-Slive-android-arm64-v8a.apk
+      - name: Upload android-armeabi-v7a.apk
+        if: ${{ !cancelled() && matrix.platform == 'android' && (success() || hashFiles('dist/test-Slive-android-armeabi-v7a.apk') != '') }}
+        uses: ./.github/actions/upload-package
+        with:
+          path: dist/test-Slive-android-armeabi-v7a.apk
+      - name: Upload android-x86_64.apk
+        if: ${{ !cancelled() && matrix.platform == 'android' && (success() || hashFiles('dist/test-Slive-android-x86_64.apk') != '') }}
+        uses: ./.github/actions/upload-package
+        with:
+          path: dist/test-Slive-android-x86_64.apk
+      - name: Upload ios-unsigned.ipa
+        if: ${{ !cancelled() && matrix.platform == 'ios' && (success() || hashFiles('dist/test-Slive-ios-unsigned.ipa') != '') }}
+        uses: ./.github/actions/upload-package
+        with:
+          path: dist/test-Slive-ios-unsigned.ipa
+      - name: Upload macos-universal.dmg
+        if: ${{ !cancelled() && matrix.platform == 'macos' && (success() || hashFiles('dist/test-Slive-macos-universal.dmg') != '') }}
+        uses: ./.github/actions/upload-package
+        with:
+          path: dist/test-Slive-macos-universal.dmg
+      - name: Upload macos-universal.zip
+        if: ${{ !cancelled() && matrix.platform == 'macos' && (success() || hashFiles('dist/test-Slive-macos-universal.zip') != '') }}
+        uses: ./.github/actions/upload-package
+        with:
+          path: dist/test-Slive-macos-universal.zip
+      - name: Upload windows-x64-setup.exe
+        if: ${{ !cancelled() && matrix.platform == 'windows' && (success() || hashFiles('dist/test-Slive-windows-x64-setup.exe') != '') }}
+        uses: ./.github/actions/upload-package
+        with:
+          path: dist/test-Slive-windows-x64-setup.exe
+      - name: Upload windows-x64.zip
+        if: ${{ !cancelled() && matrix.platform == 'windows' && (success() || hashFiles('dist/test-Slive-windows-x64.zip') != '') }}
+        uses: ./.github/actions/upload-package
+        with:
+          path: dist/test-Slive-windows-x64.zip
+      - name: Upload linux-${{ matrix.arch }}.deb
+        if: ${{ !cancelled() && matrix.platform == 'linux' && (success() || hashFiles(format('dist/test-Slive-linux-{0}.deb', matrix.arch)) != '') }}
+        uses: ./.github/actions/upload-package
+        with:
+          path: dist/test-Slive-linux-${{ matrix.arch }}.deb
+      - name: Upload linux-${{ matrix.arch }}.tar.gz
+        if: ${{ !cancelled() && matrix.platform == 'linux' && (success() || hashFiles(format('dist/test-Slive-linux-{0}.tar.gz', matrix.arch)) != '') }}
+        uses: ./.github/actions/upload-package
+        with:
+          path: dist/test-Slive-linux-${{ matrix.arch }}.tar.gz

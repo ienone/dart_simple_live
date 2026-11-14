@@ -1,0 +1,26 @@
+name: Upload installation package
+description: Upload one package without wrapping it in a ZIP archive
+inputs:
+  path:
+    description: Package file path
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/upload-artifact@v7
+      if: ${{ !cancelled() }}
+      id: upload
+      with:
+        path: ${{ inputs.path }}
+        archive: false
+        if-no-files-found: error
+        retention-days: 30
+    - name: Add download link
+      if: ${{ !cancelled() && steps.upload.outcome == 'success' }}
+      shell: bash
+      env:
+        PACKAGE_PATH: ${{ inputs.path }}
+        ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+        ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+      run: |
+        printf -- '- [%s](%s) · SHA-256: `%s`\n' "$(basename "$PACKAGE_PATH")" "$ARTIFACT_URL" "$ARTIFACT_DIGEST" >> "$GITHUB_STEP_SUMMARY"

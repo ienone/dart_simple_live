@@ -12,7 +12,7 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - name: Verify and publish the completed build
+      - name: Verify the completed build
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -22,13 +22,37 @@ jobs:
           [[ "$RUN_ID" =~ ^[0-9]+$ ]]
           gh api "repos/$GH_REPO/actions/runs/$RUN_ID" > run.json
           jq -e '.conclusion == "success" and .path == ".github/workflows/publish_app_test.yaml"' run.json
+      - name: Download installation packages
+        uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.run_id }}
+          pattern: test-Slive-*
+          path: dist
+          merge-multiple: true
+      - name: Publish the completed build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
           sha=$(jq -r .head_sha run.json)
-          gh run download "$RUN_ID" --dir dist
-          for platform in android-all ios-arm64 macos-universal windows-x64 linux-x64 linux-arm64; do
-            test -d "dist/test-Slive-$platform"
-          done
-          mapfile -d '' packages < <(find dist -type f -name 'test-Slive-*' -print0)
-          test "${#packages[@]}" -ge 10
+          packages=(
+            dist/test-Slive-android-arm64-v8a.apk
+            dist/test-Slive-android-armeabi-v7a.apk
+            dist/test-Slive-android-x86_64.apk
+            dist/test-Slive-ios-unsigned.ipa
+            dist/test-Slive-macos-universal.dmg
+            dist/test-Slive-macos-universal.zip
+            dist/test-Slive-windows-x64-setup.exe
+            dist/test-Slive-windows-x64.zip
+            dist/test-Slive-linux-x64.deb
+            dist/test-Slive-linux-x64.tar.gz
+            dist/test-Slive-linux-arm64.deb
+            dist/test-Slive-linux-arm64.tar.gz
+          )
+          for package in "${packages[@]}"; do test -s "$package"; done
           gh release create "test-$RUN_ID" "${packages[@]}" --target "$sha" --prerelease \
             --title "test-Slive ($RUN_ID)" \
             --notes '独立测试版，可与正式版共存。Android 为测试签名；iOS IPA 未签名，需自行签名安装；macOS 未公证，Windows 未签名。构建来源见本版本对应的 Actions run。'
