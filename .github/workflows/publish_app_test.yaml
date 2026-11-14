@@ -2,29 +2,51 @@ name: test-Slive packages
 
 on:
   workflow_dispatch:
-  push:
-    tags: ['test-*']
+    inputs:
+      platform:
+        description: Platform to build
+        type: choice
+        default: all
+        options: [all, android, ios, macos, windows, linux]
 
 permissions:
   contents: read
 
 concurrency:
-  group: test-packages-${{ github.ref }}
+  group: test-packages-${{ github.ref }}-${{ inputs.platform }}
   cancel-in-progress: true
 
 jobs:
+  platforms:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - id: select
+        env:
+          PLATFORM: ${{ inputs.platform }}
+        run: |
+          python3 - <<'PYTHON'
+          import json, os
+          platforms = [
+              dict(platform="android", arch="all", runner="ubuntu-24.04"),
+              dict(platform="ios", arch="arm64", runner="macos-latest"),
+              dict(platform="macos", arch="universal", runner="macos-latest"),
+              dict(platform="windows", arch="x64", runner="windows-latest"),
+              dict(platform="linux", arch="x64", runner="ubuntu-24.04"),
+              dict(platform="linux", arch="arm64", runner="ubuntu-24.04-arm"),
+          ]
+          selected = [p for p in platforms if os.environ["PLATFORM"] in ("all", p["platform"])]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write("matrix=" + json.dumps({"include": selected}) + "\n")
+          PYTHON
+
   build:
+    needs: platforms
     name: ${{ matrix.platform }}-${{ matrix.arch }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - {platform: android, arch: all, runner: ubuntu-24.04}
-          - {platform: ios, arch: arm64, runner: macos-latest}
-          - {platform: macos, arch: universal, runner: macos-latest}
-          - {platform: windows, arch: x64, runner: windows-latest}
-          - {platform: linux, arch: x64, runner: ubuntu-24.04}
-          - {platform: linux, arch: arm64, runner: ubuntu-24.04-arm}
+      matrix: ${{ fromJSON(needs.platforms.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     defaults:
@@ -65,15 +87,40 @@ jobs:
         with:
           channel: stable
           flutter-version: '3.47.8'
-          cache: true
+          # Windows SDK cache saving previously took longer than downloading it.
+          cache: ${{ matrix.platform != 'windows' }}
+          pub-cache: false
       - name: Flutter on Linux ARM64
         if: matrix.platform == 'linux' && matrix.arch == 'arm64'
         run: |
           git clone --depth 1 --branch 3.47.8 https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
           echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/flutter/bin/flutter" --version
+      - name: Cache hosted Dart packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.PUB_CACHE || '~/.pub-cache' }}/hosted
+          key: pub-hosted-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/pubspec.lock') }}
+          restore-keys: pub-hosted-${{ runner.os }}-${{ runner.arch }}-
+      - uses: gradle/actions/setup-gradle@v4
+        if: matrix.platform == 'android'
+        with:
+          cache-read-only: false
       - name: Rust
-        run: rustup update stable --no-self-update
+        id: rust
+        run: |
+          rustup update stable --no-self-update
+          echo "version=$(rustc --version | cut -d ' ' -f 2)" >> "$GITHUB_OUTPUT"
+      - name: Cache Rust dependencies and build outputs
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            simple_live_app/build/**/cargokit_build
+            simple_live_app/build/rust_lib_simple_live_app
+          key: rust-${{ matrix.platform }}-${{ matrix.arch }}-${{ steps.rust.outputs.version }}-${{ hashFiles('simple_live_app/rust/Cargo.lock', 'simple_live_app/rust_builder/**', 'simple_live_app/android/**/*.gradle.kts') }}-${{ hashFiles('simple_live_app/rust/src/**') }}
+          restore-keys: rust-${{ matrix.platform }}-${{ matrix.arch }}-${{ steps.rust.outputs.version }}-${{ hashFiles('simple_live_app/rust/Cargo.lock', 'simple_live_app/rust_builder/**', 'simple_live_app/android/**/*.gradle.kts') }}-
       - name: Dependencies
         working-directory: simple_live_app
         run: flutter pub get
@@ -81,7 +128,7 @@ jobs:
         if: matrix.platform == 'android'
         working-directory: simple_live_app
         run: |
-          flutter build apk --release --split-per-abi
+          flutter build apk --release --no-pub --split-per-abi
           mkdir -p ../dist
           for file in build/app/outputs/flutter-apk/*-release.apk; do
             arch=$(basename "$file" | sed 's/^app-//;s/-release.apk$//')
@@ -91,7 +138,7 @@ jobs:
         if: matrix.platform == 'ios'
         working-directory: simple_live_app
         run: |
-          flutter build ios --release --no-codesign
+          flutter build ios --release --no-pub --no-codesign
           mkdir -p ../dist build/ios/iphoneos/Payload
           cp -R build/ios/iphoneos/Runner.app build/ios/iphoneos/Payload/
           (cd build/ios/iphoneos && zip -qry ../../../../dist/test-Slive-ios-unsigned.ipa Payload)
@@ -99,19 +146,28 @@ jobs:
         if: matrix.platform == 'macos'
         working-directory: simple_live_app
         run: |
-          flutter build macos --release
-          mkdir -p ../dist /tmp/test-slive-dmg
+          flutter build macos --release --no-pub
+          mkdir -p ../dist
           app=$(find build/macos/Build/Products/Release -maxdepth 1 -name '*.app' -print -quit)
           codesign --force --deep --sign - "$app"
           ditto -c -k --sequesterRsrc --keepParent "$app" ../dist/test-Slive-macos-universal.zip
-          cp -R "$app" /tmp/test-slive-dmg/
-          ln -s /Applications /tmp/test-slive-dmg/Applications
-          hdiutil create -volname test-Slive -srcfolder /tmp/test-slive-dmg \
-            -ov -format UDZO ../dist/test-Slive-macos-universal.dmg
+          bash ../scripts/package_test_macos_dmg.sh "$app" ../dist/test-Slive-macos-universal.dmg
       - name: Build Windows
         if: matrix.platform == 'windows'
         working-directory: simple_live_app
-        run: flutter build windows --release
+        run: |
+          flutter build windows --release --no-pub --verbose > ../windows-build.log 2>&1 || {
+            tail -n 200 ../windows-build.log
+            exit 1
+          }
+          tail -n 20 ../windows-build.log
+      - name: Upload Windows build diagnostics
+        if: failure() && matrix.platform == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build-log
+          path: windows-build.log
+          retention-days: 7
       - name: Package Windows
         if: matrix.platform == 'windows'
         shell: pwsh
@@ -123,35 +179,17 @@ jobs:
       - name: Build Linux
         if: matrix.platform == 'linux'
         working-directory: simple_live_app
-        run: flutter build linux --release
+        run: flutter build linux --release --no-pub
       - name: Package Linux
         if: matrix.platform == 'linux'
         env:
           BUILD_ARCH: ${{ matrix.arch }}
         run: bash scripts/package_test_linux.sh
       - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && hashFiles('dist/*') != '' }}
         with:
           name: test-Slive-${{ matrix.platform }}-${{ matrix.arch }}
           path: dist/*
           if-no-files-found: error
           retention-days: 30
-
-  release:
-    if: startsWith(github.ref, 'refs/tags/test-')
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-      - name: Publish test packages
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          TEST_TAG: ${{ github.ref_name }}
-        run: |
-          gh release create "$TEST_TAG" dist/* --prerelease --title "$TEST_TAG" \
-            --notes 'test-Slive：独立应用标识，可与正式版共存。Android 使用测试签名；iOS IPA 未签名，需自行签名安装；macOS 未公证，Windows 未签名。请勿用于覆盖正式版。'
+          compression-level: 0

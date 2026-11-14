@@ -103,12 +103,12 @@ dependencies:
   media_kit:
     git:
       url: https://github.com/SlotSun/media-kit.git
-      ref: 15bb693c0dced866ce1c1d6dad88947c056fcd9c
+      ref: 06d441cd3d6da9c67ec5f99455004629482b53cb
       path: ./media_kit
   media_kit_video:
     git:
       url: https://github.com/SlotSun/media-kit.git
-      ref: 15bb693c0dced866ce1c1d6dad88947c056fcd9c
+      ref: 06d441cd3d6da9c67ec5f99455004629482b53cb
       path: ./media_kit_video
 
 dependency_overrides:
